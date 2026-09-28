@@ -54,16 +54,23 @@ function toJumpUrl(outputsPath: string): string {
 function renderPath(token: string): string {
   const t = token.replace(/\\/g, '/').replace(TRAILING, '');
   if (t === 'outputs/' || t === 'outputs') return token;
-  // 目录：显式尾斜杠，或末段没有「.扩展名」
-  const isDir = t.endsWith('/') || !/\/[^/]+\.[A-Za-z0-9]{1,8}$/.test(t);
-  if (isDir) {
-    const rel = t.replace(/^outputs\//, '').replace(/\/+$/, '');
-    if (!rel) return token;
-    return `[内容库 › ${rel}](${toJumpUrl(t)})`;
+  try {
+    // 目录：显式尾斜杠，或末段没有「.扩展名」
+    const isDir = t.endsWith('/') || !/\/[^/]+\.[A-Za-z0-9]{1,8}$/.test(t);
+    if (isDir) {
+      const rel = t.replace(/^outputs\//, '').replace(/\/+$/, '');
+      if (!rel) return token;
+      return `[内容库 › ${rel}](${toJumpUrl(t)})`;
+    }
+    const name = t.slice(t.lastIndexOf('/') + 1);
+    if (IMG_RE.test(t)) return `![${name}](${toMediaUrl(t)})`;
+    return `[${name}](${toMediaUrl(t)})`;
+  } catch {
+    // encodeURIComponent 对孤立代理项等畸形字符会抛 URIError；这是渲染路径（useMemo
+    // 同步执行），抛出去会打断整个消息气泡乃至整个对话页面。一段路径编不出链接，
+    // 就原样展示那段文字，不能因为一个字符把整条消息渲染搞崩。
+    return token;
   }
-  const name = t.slice(t.lastIndexOf('/') + 1);
-  if (IMG_RE.test(t)) return `![${name}](${toMediaUrl(t)})`;
-  return `[${name}](${toMediaUrl(t)})`;
 }
 
 function transformSegment(seg: string): string {
