@@ -137,3 +137,12 @@ def test_proxy_uri_origin_extracts_host_ignoring_port_placeholder():
     assert web._proxy_uri_origin('') is None
     assert web._proxy_uri_origin('not a url') is None
 
+
+def test_local_ports_includes_configured_easel_port():
+    """`easel web --port 9234` 时，前端自己的 http://127.0.0.1:9234 必须进白名单，
+    否则连发消息（POST /api/chat/stream）都会被当跨站请求 403 掉——这不是小众场景，
+    --port 是 README 里 `easel web [--port 7860]` 明确写出来的用法。"""
+    assert web._local_ports('9234') == {'7860', '7870', '5173', '9234'}
+    assert web._local_ports('') == {'7860', '7870', '5173'}
+    assert web._local_ports('7860') == {'7860', '7870', '5173'}
+

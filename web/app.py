@@ -425,7 +425,14 @@ async def _lifespan(_app: FastAPI):
 
 app = FastAPI(title="Easel", docs_url=None, redoc_url=None, lifespan=_lifespan)
 
-_LOCAL_PORTS = ('7860', '7870', '5173')
+def _local_ports(env_port: str) -> set[str]:
+    """本机写守卫放行的端口集合：固定的 7860/7870/5173，加上 `--port`/EASEL_PORT
+    实际配置的端口——否则自定义端口跑 Easel 时，前端自己发的写请求（包括发消息
+    的 /api/chat/stream）会被 local_write_guard 当跨站请求 403 掉。"""
+    return {'7860', '7870', '5173', (env_port or '').strip() or '7860'}
+
+
+_LOCAL_PORTS = _local_ports(os.environ.get('EASEL_PORT', ''))
 _LOCAL_ORIGINS = [f'http://{host}:{port}'
                   for host in ('127.0.0.1', 'localhost') for port in _LOCAL_PORTS]
 _LOCAL_ORIGINS += [o.strip() for o in os.environ.get('EASEL_EXTRA_ORIGINS', '').split(',') if o.strip()]
