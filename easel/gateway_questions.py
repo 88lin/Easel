@@ -18,7 +18,6 @@ from __future__ import annotations
 
 import base64
 import json
-import os
 import re
 import sqlite3
 import subprocess
@@ -28,18 +27,19 @@ import time
 from functools import lru_cache
 from pathlib import Path
 
+from easel.gateway_endpoint import websocket_url
+from easel.openclaw_workspace import state_dir
+
 # --- path resolution -------------------------------------------------------
 
-HOME = Path.home()
-# Easel runs OpenClaw under an isolated `easel` profile at ~/.openclaw-easel/;
-# allow an override for non-default setups.
-PROFILE_DIR = Path(os.environ.get("EASEL_OPENCLAW_STATE_DIR") or (HOME / ".openclaw-easel"))
+PROFILE_DIR = state_dir()
 PROFILE_STATE_DIR = PROFILE_DIR / "state"
 PROFILE_DB = PROFILE_STATE_DIR / "openclaw.sqlite"
 
-# Gateway loopback endpoint (default port 18789; overridable when reconfigured).
-GATEWAY_HOST = os.environ.get("EASEL_GATEWAY_HOST", "127.0.0.1")
-GATEWAY_PORT = int(os.environ.get("EASEL_GATEWAY_PORT", "18789"))
+# Gateway loopback endpoint. 端口**不写死**：Easel 用 --profile easel，而 OpenClaw 对非默认
+# profile 不用 18789，而是 20000 + fnv1a32(profile) % 40000（easel → 37289）。写死会造成
+# 「gateway 明明活着，卡片桥接却连不上」。解析优先级见 easel/gateway_endpoint.py；
+# 端口在每次 connect 时现取（web 进程长驻，用户可能改配置后重启 gateway）。
 
 # Gateway WS handshake constants. Kept here as a single source of truth rather
 # than buried in the connect payload — bump these to track OpenClaw's gateway
@@ -266,7 +266,7 @@ class GatewayClient:
         # header, which the gateway reads as a browser request and refuses to
         # silent-local-pair (NOT_PAIRED). A CLI operator must present no Origin.
         ws = self._ws_lib.create_connection(
-            f"ws://{GATEWAY_HOST}:{GATEWAY_PORT}", timeout=self.timeout,
+            websocket_url(), timeout=self.timeout,
             suppress_origin=True)
         try:
             first = json.loads(ws.recv())

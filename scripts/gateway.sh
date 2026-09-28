@@ -11,6 +11,31 @@ LOGFILE="/tmp/easel-gateway.log"
 ADAPTER_LOGFILE="/tmp/easel-openai-maas-adapter.log"
 PROJECT_ROOT="$(cd "$(dirname "$0")/.." && pwd)"
 
+# ---- gateway 端口：不写死，问 Easel 的解析器 --------------------------------
+# OpenClaw 对**非默认 profile** 不用 18789：它按 20000 + fnv1a32(profile) % 40000 分配
+# （easel → 37289），并把结果落进 ~/.openclaw-easel/openclaw.json。这里以前写死 18789，
+# 于是 healthz 恒探不通：start 每次 --force 重启一个健康的 gateway，status 永远报未运行。
+# 解析优先级（环境变量 > openclaw.json > profile 哈希）与 OpenClaw 自己的
+# resolveGatewayPort 逐条对齐 —— 单一真相源在 easel/gateway_endpoint.py，别在这里再抄一份。
+GATEWAY_PORT="$(
+    PYTHONPATH="$PROJECT_ROOT${PYTHONPATH:+:$PYTHONPATH}" python3 -c \
+        'from easel.gateway_endpoint import resolve_gateway_port as p; print(p())' \
+        2>/dev/null | tail -n 1
+)" || true
+# 解析不出来就明着失败，而不是退到一个猜的端口："探错端口"就是这次要根治的病
+# （silent wrong-port → healthz 恒假 → start 反复 --force 重启健康的 gateway）。
+if ! [[ "$GATEWAY_PORT" =~ ^[0-9]+$ ]]; then
+    echo "[easel] 无法解析 gateway 端口（需要 python3，且能 import easel）。" >&2
+    echo "        手动查：PYTHONPATH=\"$PROJECT_ROOT\" python3 -c 'from easel.gateway_endpoint import describe; print(describe())'" >&2
+    exit 1
+fi
+
+# Easel 自己的端口覆盖要透传给 OpenClaw：gateway 进程只认 OPENCLAW_GATEWAY_PORT（它优先级最高），
+# 不透传的话 `EASEL_GATEWAY_PORT=xxx ./scripts/gateway.sh start` 会让我们探 xxx、它却听别的。
+if [ -n "${EASEL_GATEWAY_PORT:-}" ]; then
+    export OPENCLAW_GATEWAY_PORT="$EASEL_GATEWAY_PORT"
+fi
+
 # ---- 跨平台兼容（macOS 没有 ss/setsid/procfs）--------------------------
 # ss/setsid 属 iproute2/util-linux，/proc 是 Linux 专属；macOS/BSD 三者都没有。
 # 按可用性回退，让 gateway.sh 在 Linux 与 macOS 上都能起停。
@@ -51,11 +76,11 @@ _cmdline() {
 }
 
 gateway_live() {
-    curl -sf --max-time 2 http://localhost:18789/healthz > /dev/null 2>&1
+    curl -sf --max-time 2 "http://localhost:${GATEWAY_PORT}/healthz" > /dev/null 2>&1
 }
 
 gateway_pid() {
-    _port_pid 18789
+    _port_pid "$GATEWAY_PORT"
 }
 
 adapter_port() {
@@ -117,7 +142,7 @@ case "${1:-status}" in
             echo "[easel] Gateway already running${PID:+ (PID $PID)}"
             exit 0
         fi
-        echo "[easel] Starting Easel gateway (profile: $PROFILE)..."
+        echo "[easel] Starting Easel gateway (profile: $PROFILE, port: $GATEWAY_PORT)..."
         # 原始事件流由 gateway 进程按自己的 env 写到单个共享文件（web/app.py 会 tail 它做流式）。
         # 注意：`openclaw agent` 客户端没有 --raw-stream 标志，在客户端 env 上设这俩变量无效，
         # 必须在这里、真正跑模型的 gateway 上开启。setsid -f/nohup 会继承下面 export 的 env。
@@ -159,11 +184,11 @@ case "${1:-status}" in
     status)
         if gateway_live; then
             PID="$(gateway_pid)"
-            HEALTH=$(curl -sf http://localhost:18789/healthz 2>&1 || echo '{"ok":false}')
-            echo "[easel] Gateway running${PID:+ (PID $PID)}, profile: $PROFILE"
+            HEALTH=$(curl -sf "http://localhost:${GATEWAY_PORT}/healthz" 2>&1 || echo '{"ok":false}')
+            echo "[easel] Gateway running${PID:+ (PID $PID)}, profile: $PROFILE, port: $GATEWAY_PORT"
             echo "  health: $HEALTH"
         else
-            echo "[easel] Gateway not running"
+            echo "[easel] Gateway not running (profile: $PROFILE, port: $GATEWAY_PORT)"
         fi
         ;;
     logs)
