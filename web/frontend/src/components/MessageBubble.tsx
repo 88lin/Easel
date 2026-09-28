@@ -1,6 +1,7 @@
 import { useMemo, useState } from 'react';
 import type { ChatMessage } from '../lib/store';
 import { renderMarkdown } from '../lib/sanitize';
+import { linkifyOutputs, externalizeMediaLinks } from '../lib/linkifyOutputs';
 import { IconCopy, IconCheck, IconRetry } from './icons';
 
 export interface BubbleActions {
@@ -40,8 +41,13 @@ function ActionBar({ actions }: { actions: BubbleActions }) {
 export default function MessageBubble({ message, isStreaming, thinking, activity, stillWorking, actions }: MessageBubbleProps) {
   const html = useMemo(() => {
     if (message.role === 'user') return '';
-    return renderMarkdown(message.content);
-  }, [message.content, message.role]);
+    // 助手正文里裸露的产物路径先转成前端可用链接（文件直开、图片内联、目录跳内容库）。
+    // 流式中不转换：路径/围栏代码块可能被 SSE token 从中间切开（扩展名没收全会被
+    // 误判成目录、未闭合的 ``` 会误伤命令示例里的 outputs/），转换只在流式结束后
+    // 对完整正文做一次，避免闪烁成错误链接再跳变。
+    const body = isStreaming ? message.content : linkifyOutputs(message.content);
+    return externalizeMediaLinks(renderMarkdown(body));
+  }, [message.content, message.role, isStreaming]);
 
   // ---- 用户消息 ----
   if (message.role === 'user') {

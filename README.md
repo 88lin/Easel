@@ -33,6 +33,10 @@
   <a href="assets/readme/wechat-group.png"><img src="https://img.shields.io/badge/微信群-加入交流-07C160?style=flat-square&logo=wechat&logoColor=white" alt="WeChat Group"></a>
 </p>
 
+<p align="center">
+  <a href="https://trendshift.io/repositories/195527?utm_source=trendshift-badge&utm_medium=badge&utm_campaign=badge-trendshift-195527" target="_blank" rel="noopener noreferrer"><img src="https://trendshift.io/api/badge/trendshift/repositories/195527/daily?language=Python" alt="ZJU-REAL%2FEasel | Trendshift" width="250" height="55"/></a>
+</p>
+
 ![Easel 产品宣传海报](assets/readme/poster.png)
 
 ## 🎨 Easel 是什么
