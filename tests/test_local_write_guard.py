@@ -124,3 +124,16 @@ def test_loopback_peer_helper():
     assert web._loopback_peer(Stub(Peer('testclient'))) is False
     assert web._loopback_peer(Stub(Peer(''))) is False
     assert web._loopback_peer(Stub(None)) is False          # 取不到对端 → 拒绝，不猜
+
+
+def test_proxy_uri_origin_extracts_host_ignoring_port_placeholder():
+    """VSCode/code-server 的 VSCODE_PROXY_URI 形如 https://host/.../proxy/{{port}}/；
+    {{port}} 在 path 段，不影响 host 解析。这个域名如果不进白名单，通过代理打开的
+    页面从第一个请求起就会被 TrustedHostMiddleware/CORS 拒绝（收紧前 allow_origins=["*"]
+    时这条路是通的）。"""
+    uri = 'https://rai.devops.xiaohongshu.com/aicode/abc123/codeserver/proxy/{{port}}/'
+    assert web._proxy_uri_origin(uri) == ('rai.devops.xiaohongshu.com',
+                                          'https://rai.devops.xiaohongshu.com')
+    assert web._proxy_uri_origin('') is None
+    assert web._proxy_uri_origin('not a url') is None
+

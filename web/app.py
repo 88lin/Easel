@@ -429,6 +429,26 @@ _LOCAL_PORTS = ('7860', '7870', '5173')
 _LOCAL_ORIGINS = [f'http://{host}:{port}'
                   for host in ('127.0.0.1', 'localhost') for port in _LOCAL_PORTS]
 _LOCAL_ORIGINS += [o.strip() for o in os.environ.get('EASEL_EXTRA_ORIGINS', '').split(',') if o.strip()]
+_EXTRA_HOSTS = [h.strip() for h in os.environ.get('EASEL_EXTRA_HOSTS', '').split(',') if h.strip()]
+
+# VSCode/code-server 等远程开发环境常通过 VSCODE_PROXY_URI 这个反代域名访问 Easel
+# （真实连接仍是本机回环，代理在同一台机器上转发）；不识别这个域名会让通过代理
+# 打开的页面从第一个请求起就被下面的 TrustedHostMiddleware/CORS 拒绝——收紧前
+# allow_origins=["*"] 时这条路是通的，别让这次收紧顺带堵死它。
+def _proxy_uri_origin(uri: str) -> tuple[str, str] | None:
+    """从 VSCODE_PROXY_URI 里取反代域名，返回 (host, origin)；解析不出 host 则 None。"""
+    if not uri:
+        return None
+    parsed = urllib.parse.urlparse(uri)
+    if not parsed.hostname:
+        return None
+    return parsed.hostname, f'{parsed.scheme}://{parsed.hostname}'
+
+
+_proxy_origin = _proxy_uri_origin(os.environ.get('VSCODE_PROXY_URI', ''))
+if _proxy_origin:
+    _EXTRA_HOSTS.append(_proxy_origin[0])
+    _LOCAL_ORIGINS.append(_proxy_origin[1])
 
 
 def _loopback_peer(request: Request) -> bool:
@@ -444,7 +464,6 @@ def _loopback_peer(request: Request) -> bool:
 
 
 app.add_middleware(CORSMiddleware, allow_origins=_LOCAL_ORIGINS, allow_methods=["*"], allow_headers=["*"])
-_EXTRA_HOSTS = [h.strip() for h in os.environ.get('EASEL_EXTRA_HOSTS', '').split(',') if h.strip()]
 app.add_middleware(TrustedHostMiddleware, allowed_hosts=['localhost', '127.0.0.1'] + _EXTRA_HOSTS)
 
 
