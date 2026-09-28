@@ -111,9 +111,14 @@ def configured_port() -> int | None:
 
 
 def profile_port(profile: str = PROFILE) -> int:
-    """OpenClaw 给非默认 profile 的确定性端口：``20000 + fnv1a32(profile) % 40000``。"""
-    name = (profile or "").strip().lower()
-    if not name or name == "default":
+    """OpenClaw 给非默认 profile 的确定性端口：``20000 + fnv1a32(profile) % 40000``。
+
+    OpenClaw 的 normalizeProfileName 只在判断是否等于 "default" 时转小写比较，
+    参与哈希的仍是原始大小写（见 profile-utils.ts）；这里必须照办，否则
+    "Easel"/"easel" 会被当成同一个 profile，算出跟真实 gateway 不一致的端口。
+    """
+    name = (profile or "").strip()
+    if not name or name.lower() == "default":
         return DEFAULT_GATEWAY_PORT
     digest = 2166136261
     for byte in name.encode("utf-8"):

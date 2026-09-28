@@ -42,9 +42,12 @@ function Get-ConfiguredPort([string]$Dir) {
 }
 
 function Get-ProfilePort([string]$ProfileName) {
-    # 20000 + fnv1a32(profile) % 40000；只有默认 profile 才是 18789
-    $name = $ProfileName.Trim().ToLowerInvariant()
-    if (-not $name -or $name -eq 'default') { return 18789 }
+    # 20000 + fnv1a32(profile) % 40000；只有默认 profile 才是 18789。
+    # OpenClaw 的 normalizeProfileName 只在判断是否等于 "default" 时转小写比较，
+    # 参与哈希的仍是原始大小写——这里必须照办，否则 "Easel"/"easel" 会被当成
+    # 同一个 profile，算出跟真实 gateway 不一致的端口。
+    $name = $ProfileName.Trim()
+    if (-not $name -or $name.ToLowerInvariant() -eq 'default') { return 18789 }
     $hash = [long]2166136261
     foreach ($byte in [System.Text.Encoding]::UTF8.GetBytes($name)) {
         # 必须每步显式 [long]：PS 的 -bxor 会溢出到 UInt64，而 UInt64 * Int32 会再被

@@ -64,8 +64,18 @@ def test_profile_hash_is_deterministic_and_in_range():
         assert port == ge.profile_port(name)
 
 
-def test_profile_name_is_case_insensitive():
-    assert ge.profile_port("Easel") == ge.profile_port("easel")
+def test_profile_hash_is_case_sensitive():
+    """OpenClaw 的 normalizeProfileName 只在判断是否等于 "default" 时转小写比较，
+    参与哈希的仍是原始大小写——"Easel"/"easel" 是两个不同 profile，端口不同。"""
+    assert ge.profile_port("Easel") == 45577
+    assert ge.profile_port("EASEL") == 48137
+    assert ge.profile_port("Easel") != ge.profile_port("easel")
+
+
+def test_default_profile_name_is_case_insensitive():
+    """「是不是 default」这一步判定，OpenClaw 确实是大小写不敏感的。"""
+    assert ge.profile_port("Default") == ge.DEFAULT_GATEWAY_PORT
+    assert ge.profile_port("DEFAULT") == ge.DEFAULT_GATEWAY_PORT
 
 
 # ── 解析优先级：环境变量 > openclaw.json > profile 哈希 ────────────────
