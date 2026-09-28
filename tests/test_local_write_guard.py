@@ -51,8 +51,10 @@ def test_every_write_method_without_origin_from_loopback_is_allowed():
 def test_write_without_origin_from_remote_peer_is_rejected():
     """对端不是回环时没有 Origin 可判，拿不准就拒绝。
 
-    今天就绑 127.0.0.1，这条看着多余；一旦有人把绑定改成 0.0.0.0，
-    它拦住的就是「局域网内无人值守写操作」。
+    实际监听的是 0.0.0.0（兼容 Docker/远程容器端口转发，见 app.py 底部
+    uvicorn.run 处注释），这条挡的就是「局域网内无 Origin 的无人值守写操作」；
+    带 Origin 的请求走上面那条判据，伪造 Origin 头即可绕过——见 local_write_guard
+    文档字符串里的局限说明。
     """
     response = _client(REMOTE).post(PROBE)
     assert response.status_code == 403

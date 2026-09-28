@@ -443,7 +443,6 @@ def _loopback_peer(request: Request) -> bool:
         return False
 
 
-WEB_BIND_HOST = (os.environ.get('EASEL_HOST', '').strip() or '127.0.0.1')
 app.add_middleware(CORSMiddleware, allow_origins=_LOCAL_ORIGINS, allow_methods=["*"], allow_headers=["*"])
 _EXTRA_HOSTS = [h.strip() for h in os.environ.get('EASEL_EXTRA_HOSTS', '').split(',') if h.strip()]
 app.add_middleware(TrustedHostMiddleware, allowed_hosts=['localhost', '127.0.0.1'] + _EXTRA_HOSTS)
@@ -456,6 +455,14 @@ async def local_write_guard(request: Request, call_next):
     两条判据，按请求实际形态二选一：
     ① 带 Origin（浏览器跨站发起）：Origin 必须在 _LOCAL_ORIGINS 里，否则 403。
     ② 不带 Origin（curl / 本机脚本 / 测试客户端）：要求对端来自回环地址。
+
+    局限（重要）：这套防护假定 Origin/Host 头不可伪造——对浏览器成立，对裸
+    HTTP 客户端不成立。本进程仍监听 0.0.0.0（见文件底部 uvicorn.run，未随
+    此中间件收紧，兼容 Docker/远程容器端口转发场景），因此局域网内能直连到
+    这个端口的攻击者，只要手写 curl 一起伪造 `Origin`/`Host` 头就能绕过本
+    中间件与下面的 TrustedHostMiddleware。这里防的是「浏览器打开恶意网页」
+    这一类跨站攻击，不是「网络可达即视为可信」的边界——不要把本服务暴露在
+    不受信任的网络（公共 WiFi、无防火墙的公网主机）上。
     """
     origin = request.headers.get('origin')
     if request.url.path == '/api/clipper' and origin and re.fullmatch(r'chrome-extension://[a-p]{32}', origin):
@@ -4024,4 +4031,6 @@ if __name__ == "__main__":
     if proxy_url:
         print(f"  {proxy_url}")
     print()
+    # 监听 0.0.0.0（非仅回环）是为了兼容 Docker/远程容器端口转发访问 Easel 的场景；
+    # local_write_guard/TrustedHostMiddleware 只挡浏览器发起的跨站请求，见其注释里的局限说明。
     uvicorn.run(app, host="0.0.0.0", port=port, log_level="warning")
