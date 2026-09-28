@@ -7,6 +7,7 @@ import subprocess
 import urllib.error
 import urllib.request
 
+from easel.gateway_endpoint import healthz_url, port_source, resolve_gateway_port
 from easel.openclaw_cmd import openclaw_base_cmd
 
 GREEN = "\033[0;32m"
@@ -51,14 +52,17 @@ def cmd_ping(_args) -> int:
     print("[easel] 连通性测试\n")
     all_ok = True
 
-    # Step 1: Gateway healthz
+    # Step 1: Gateway healthz（端口不写死：非默认 profile 走哈希，easel → 37289）
+    gateway_step = f"Step 1: Gateway healthz (localhost:{resolve_gateway_port()})"
     try:
-        with urllib.request.urlopen("http://127.0.0.1:18789/healthz", timeout=10) as response:
+        with urllib.request.urlopen(healthz_url(), timeout=10) as response:
             gateway_ok = response.status == 200
     except (OSError, urllib.error.URLError):
         gateway_ok = False
-    print(f"  {'Step 1: Gateway healthz (localhost:18789)':<50s} "
+    print(f"  {gateway_step:<50s} "
           f"{GREEN if gateway_ok else RED}{'OK' if gateway_ok else 'FAIL'}{NC}")
+    if not gateway_ok:
+        print(f"    └─ 端口来自 {port_source()}；改了 profile/端口后请 python -m easel gateway restart")
     all_ok &= gateway_ok
 
     # Step 2: OpenClaw agent

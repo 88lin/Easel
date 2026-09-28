@@ -39,6 +39,7 @@ if str(PROJECT_ROOT) not in sys.path:
 if str(PROJECT_ROOT / "scripts") not in sys.path:
     sys.path.insert(0, str(PROJECT_ROOT / "scripts"))
 
+from easel.gateway_endpoint import chat_completions_url, healthz_url, port_source
 from easel.openclaw_cmd import openclaw_base_cmd
 from easel.persona import load_profile_text, persona_prefix, chat_turn_message, profile_exists, _FILE_ORDER
 from easel.timeouts import TIMEOUT_CHAT, TIMEOUT_DIRECT, TIMEOUT_PRODUCE
@@ -158,7 +159,7 @@ def _gateway_http_ready(force: bool = False) -> bool:
     try:
         import httpx  # noqa: F401  HTTP 路径全靠它做 SSE；没装就当端点不可用，回退 CLI
         rq = urllib.request.Request(
-            "http://127.0.0.1:18789/v1/chat/completions", data=b"{}",
+            chat_completions_url(), data=b"{}",
             headers={"Content-Type": "application/json"}, method="POST")
         try:
             with urllib.request.urlopen(rq, timeout=3):
@@ -872,7 +873,9 @@ def run_agent_sync(msg: str, timeout: int = TIMEOUT_DIRECT, session_id: str | No
 
 def check_gateway() -> bool:
     try:
-        with urllib.request.urlopen('http://127.0.0.1:18789/healthz', timeout=3) as response:
+        # 端口不能写死：Easel 用 --profile easel，OpenClaw 对非默认 profile 会走
+        # 20000 + fnv1a32(profile) % 40000（easel → 37289），见 easel/gateway_endpoint.py。
+        with urllib.request.urlopen(healthz_url(), timeout=3) as response:
             return response.status == 200
     except (OSError, urllib.error.URLError):
         return False
@@ -1843,7 +1846,30 @@ def _resolve_transport(sk: str) -> str:
             return "http"
     except OSError:
         pass
-    return "http" if (CHAT_TRANSPORT == "http" and _gateway_http_ready()) else "cli"
+    # 3) 新会话：按总开关 + 真探针；探不通不报错，退回 CLI 但要吭一声
+    if CHAT_TRANSPORT == "http" and _gateway_http_ready():
+        return "http"
+    if CHAT_TRANSPORT == "http":
+        _warn_http_transport_unavailable()
+    return "cli"
+
+
+_HTTP_FALLBACK_WARNED = False
+
+
+def _warn_http_transport_unavailable() -> None:
+    """HTTP 直连不可用时只喊一次，并把**探的到底是哪个端点**写出来。
+
+    以前这里是静默退回：端口写死探错地方，表现只是「每轮慢 3s」，没人会去查 —— 这次网关
+    端口错配就是这么藏住的（面板离线 + 静默退 CLI）。
+    """
+    global _HTTP_FALLBACK_WARNED
+    if _HTTP_FALLBACK_WARNED:
+        return
+    _HTTP_FALLBACK_WARNED = True
+    print(f"[chat-transport] HTTP 直连探不通 {chat_completions_url()}（端口来自 {port_source()}），"
+          f"已退回 CLI 传输（每轮多付一次客户端冷启动）。"
+          f"查：{PROJECT_ROOT}/scripts/gateway.sh status", file=sys.stderr, flush=True)
 
 
 def _pin_transport(sk: str, kind: str) -> None:
@@ -2127,7 +2153,7 @@ async def api_chat_stream(req: ChatRequest):
                 timeout = _httpx.Timeout(TIMEOUT_CHAT + 60, connect=10)
                 async with _httpx.AsyncClient(timeout=timeout) as client:
                     async with client.stream(
-                            "POST", "http://127.0.0.1:18789/v1/chat/completions",
+                            "POST", chat_completions_url(),
                             json=body, headers=headers) as resp:
                         if resp.status_code != 200:
                             raw = (await resp.aread())[:200].decode("utf-8", "replace")
