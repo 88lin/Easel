@@ -354,89 +354,101 @@ def _scrape(platform: str, headed: bool, base: str | None, proxy: str | None) ->
     cfg = PLATFORMS[platform]
     r = {"nickname": "", "followers": None, "likes": None, "following": None,
          "posts": None, "metrics": [], "notes": [], "logged_in": True}
-    with sync_playwright() as p:
-        profile = _profile_dir(platform, base)
-        profile.mkdir(parents=True, exist_ok=True)
-        if platform == "xiaohongshu":
-            # 与发布/登录共用 Cloak + 同一套启动参数；禁图版 Chromium 会把创作中心打回登录页。
-            from xhs_publish import _launch as _xhs_launch, _clear_stale_chrome_locks
-            _clear_stale_chrome_locks(profile)
-            ctx = _xhs_launch(p, headed, base, proxy)
-        else:
-            kwargs = dict(headless=not headed, locale="zh-CN", args=LAUNCH_ARGS)
-            if proxy:
-                kwargs["proxy"] = {"server": proxy}
-            ctx = p.chromium.launch_persistent_context(str(profile), **kwargs)
-        page = ctx.pages[0] if ctx.pages else ctx.new_page()
-        try:
-            page.goto(cfg["url"], wait_until="domcontentloaded", timeout=30000)
-            ov, d = cfg["overview"], cfg.get("overview_dir", "after")
-            mets = cfg.get("metrics", [])
-            manchor = cfg.get("metrics_anchor")
-            # 稳定性轮询：概览/指标数值连续两次一致才走，避开占位0→真实值的异步坑
-            def _sig(L):
-                lk = num_by_label(L, ov.get("likes", []), d)
-                fo = num_by_label(L, ov.get("followers", []), d)
-                m = metrics_with_vs(L, mets, manchor)
-                mv = m[0]["value"] if m else None
-                # 配了 metrics_anchor（如抖音「近7日」）说明该页必有指标块；块异步晚于概览渲染，
-                # 若还没解析到指标就别急着「稳定」返回，继续轮询等它出来（避免 metrics 偶发为空）。
-                if manchor and mets and not m:
-                    return None
-                return None if (lk is None and fo is None and mv is None) else (lk, fo, mv)
-            lines = _poll_stable(page, _sig, 10000)
-            clicked = False
-            for txt in cfg.get("pre_click", []):   # 前置点击（如知乎点「累计」tab 拿总量）
-                try:
-                    page.click(f"text={txt}", timeout=3000)
-                    clicked = True
-                except Exception:
-                    pass
-            if clicked:
-                lines = _poll_stable(page, _sig, 6000)   # 点「累计」后重新等稳定
-            if re.search(r"(passport|/login)", page.url or "") or \
-               page.query_selector('button:has-text("扫码登录"), [class*="login-btn"]'):
-                r["logged_in"] = False
-            r["followers"] = num_by_label(lines, ov["followers"], d)
-            r["likes"] = num_by_label(lines, ov["likes"], d)
-            r["following"] = num_by_label(lines, ov.get("following", []), d)
-            r["posts"] = num_by_label(lines, cfg.get("posts_labels", ["笔记数", "作品数", "内容数", "视频数"]), d)
-            r["metrics"] = metrics_with_vs(lines, cfg.get("metrics", []), manchor)[:8]
-            r["nickname"] = extract_nickname(lines, ov, cfg.get("uid_anchor", ""))
-            # 昵称优先用专用选择器（视频号文本锚点不稳：概览是「关注者1」同行，锚不到昵称）
-            nsel = cfg.get("nickname_selector")
-            if nsel:
-                try:
-                    el = page.query_selector(nsel)
-                    if el:
-                        t = (el.inner_text() or "").strip().splitlines()
-                        if t and t[0]:
-                            r["nickname"] = t[0][:40]
-                except Exception:
-                    pass
-            if os.environ.get("EASEL_STATS_DEBUG"):
-                ANALYTICS_DIR.mkdir(parents=True, exist_ok=True)
-                (ANALYTICS_DIR / f"{platform}-page.txt").write_text("\n".join(lines)[:20000], encoding="utf-8")
-                try:
-                    page.screenshot(path=str(ANALYTICS_DIR / f"{platform}-page.png"))
-                except Exception:
-                    pass
-            # 粉丝数在单独子页时（如知乎「关注者分析」），主页抓完再来这里取
-            fu = cfg.get("followers_url")
-            if fu and r["followers"] is None:
-                try:
-                    page.goto(fu, wait_until="domcontentloaded", timeout=30000)
-                    flabels = cfg.get("followers_labels", ov["followers"])
-                    flines = _poll_stable(
-                        page, lambda L: (num_by_label(L, flabels, "after"),)
-                        if num_by_label(L, flabels, "after") is not None else None, 8000)
-                    r["followers"] = num_by_label(flines, flabels, "after")
-                except Exception:
-                    pass
-            # 最新笔记放最后抓——小红书会跳转到笔记管理页，之后不再读首页
-            r["notes"] = _scrape_notes(platform, page, cfg)
-        finally:
-            ctx.close()
+    profile = _profile_dir(platform, base)
+    profile.mkdir(parents=True, exist_ok=True)
+    xhs_lock = None
+    if platform == "xiaohongshu":
+        # 同一个 XiaohongshuProfile 目录，xhs_publish.py 的登录/发布/whoami 都用 _ProfileLock
+        # 互斥（见其模块注释：并发打开会把内核打成 exit 21）；看数据这条路径也走同一个目录，
+        # 必须一起遵守，否则就是那个锁没堵住的后门。锁在起 playwright 之前拿，确保启动失败
+        # 也不会漏放（finally 包住整段，不只是 ctx 的生命周期）。
+        from xhs_publish import _launch as _xhs_launch, _clear_stale_chrome_locks, _ProfileLock
+        xhs_lock = _ProfileLock(profile)
+        xhs_lock.acquire(20)
+    try:
+        with sync_playwright() as p:
+            if platform == "xiaohongshu":
+                # 与发布/登录共用 Cloak + 同一套启动参数；禁图版 Chromium 会把创作中心打回登录页。
+                _clear_stale_chrome_locks(profile)
+                ctx = _xhs_launch(p, headed, base, proxy)
+            else:
+                kwargs = dict(headless=not headed, locale="zh-CN", args=LAUNCH_ARGS)
+                if proxy:
+                    kwargs["proxy"] = {"server": proxy}
+                ctx = p.chromium.launch_persistent_context(str(profile), **kwargs)
+            page = ctx.pages[0] if ctx.pages else ctx.new_page()
+            try:
+                page.goto(cfg["url"], wait_until="domcontentloaded", timeout=30000)
+                ov, d = cfg["overview"], cfg.get("overview_dir", "after")
+                mets = cfg.get("metrics", [])
+                manchor = cfg.get("metrics_anchor")
+                # 稳定性轮询：概览/指标数值连续两次一致才走，避开占位0→真实值的异步坑
+                def _sig(L):
+                    lk = num_by_label(L, ov.get("likes", []), d)
+                    fo = num_by_label(L, ov.get("followers", []), d)
+                    m = metrics_with_vs(L, mets, manchor)
+                    mv = m[0]["value"] if m else None
+                    # 配了 metrics_anchor（如抖音「近7日」）说明该页必有指标块；块异步晚于概览渲染，
+                    # 若还没解析到指标就别急着「稳定」返回，继续轮询等它出来（避免 metrics 偶发为空）。
+                    if manchor and mets and not m:
+                        return None
+                    return None if (lk is None and fo is None and mv is None) else (lk, fo, mv)
+                lines = _poll_stable(page, _sig, 10000)
+                clicked = False
+                for txt in cfg.get("pre_click", []):   # 前置点击（如知乎点「累计」tab 拿总量）
+                    try:
+                        page.click(f"text={txt}", timeout=3000)
+                        clicked = True
+                    except Exception:
+                        pass
+                if clicked:
+                    lines = _poll_stable(page, _sig, 6000)   # 点「累计」后重新等稳定
+                if re.search(r"(passport|/login)", page.url or "") or \
+                   page.query_selector('button:has-text("扫码登录"), [class*="login-btn"]'):
+                    r["logged_in"] = False
+                r["followers"] = num_by_label(lines, ov["followers"], d)
+                r["likes"] = num_by_label(lines, ov["likes"], d)
+                r["following"] = num_by_label(lines, ov.get("following", []), d)
+                r["posts"] = num_by_label(lines, cfg.get("posts_labels", ["笔记数", "作品数", "内容数", "视频数"]), d)
+                r["metrics"] = metrics_with_vs(lines, cfg.get("metrics", []), manchor)[:8]
+                r["nickname"] = extract_nickname(lines, ov, cfg.get("uid_anchor", ""))
+                # 昵称优先用专用选择器（视频号文本锚点不稳：概览是「关注者1」同行，锚不到昵称）
+                nsel = cfg.get("nickname_selector")
+                if nsel:
+                    try:
+                        el = page.query_selector(nsel)
+                        if el:
+                            t = (el.inner_text() or "").strip().splitlines()
+                            if t and t[0]:
+                                r["nickname"] = t[0][:40]
+                    except Exception:
+                        pass
+                if os.environ.get("EASEL_STATS_DEBUG"):
+                    ANALYTICS_DIR.mkdir(parents=True, exist_ok=True)
+                    (ANALYTICS_DIR / f"{platform}-page.txt").write_text("\n".join(lines)[:20000], encoding="utf-8")
+                    try:
+                        page.screenshot(path=str(ANALYTICS_DIR / f"{platform}-page.png"))
+                    except Exception:
+                        pass
+                # 粉丝数在单独子页时（如知乎「关注者分析」），主页抓完再来这里取
+                fu = cfg.get("followers_url")
+                if fu and r["followers"] is None:
+                    try:
+                        page.goto(fu, wait_until="domcontentloaded", timeout=30000)
+                        flabels = cfg.get("followers_labels", ov["followers"])
+                        flines = _poll_stable(
+                            page, lambda L: (num_by_label(L, flabels, "after"),)
+                            if num_by_label(L, flabels, "after") is not None else None, 8000)
+                        r["followers"] = num_by_label(flines, flabels, "after")
+                    except Exception:
+                        pass
+                # 最新笔记放最后抓——小红书会跳转到笔记管理页，之后不再读首页
+                r["notes"] = _scrape_notes(platform, page, cfg)
+            finally:
+                ctx.close()
+    finally:
+        if xhs_lock is not None:
+            xhs_lock.release()
     return r
 
 
