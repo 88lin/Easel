@@ -30,7 +30,10 @@ const ABS_PREFIX = /(?<![A-Za-z0-9:.\/])(?:[A-Za-z]:[\\/]|~|\/)(?:[^\s`|~～<>"'
  *  常见中西文标点（它们常紧跟路径出现，如「outputs/a.png，共 7 张」里的逗号）。
  *  注意必须放行全角竖线 ｜ 和反斜杠 —— 项目目录名与 Windows 相对路径会用到。 */
 const REST = '[^\\s`|~～<>"\'“”‘’()\\[\\]{}:,;，。；：！？、（）【】《》「」]';
-const OUT_RE = new RegExp(`outputs\\/(?:${REST})+`, 'g');
+/** 同 ABS_PREFIX 的 lookbehind：前一个字符不能是字母数字/:/./— 否则任何恰好含
+ *  「outputs/」子串的外部 URL 或无关路径（如 https://x.com/docs/outputs/readme）
+ *  都会被当成本项目产物路径，把原文搅烂。 */
+const OUT_RE = new RegExp(`(?<![A-Za-z0-9:.\\/])outputs\\/(?:${REST})+`, 'g');
 
 /** 受保护区：围栏代码块、行内代码、已有的 markdown 链接 —— 原样保留 */
 const PROTECT = /(```[\s\S]*?```|`[^`\n]*`|\[[^\]]*\]\([^)\n]*\))/g;
