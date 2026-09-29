@@ -110,6 +110,7 @@ def sandbox(tmp_path, monkeypatch):
     local = "http://127.0.0.1:7860"
     with TestClient(web.app, base_url=local, client=("127.0.0.1", 51234),
                     headers={"Origin": local}) as c:
+        c.env_file = env_file
         c.oc_file = oc
         yield c
 
@@ -163,6 +164,23 @@ def test_enable_claude_code_writes_provider_and_primary(sandbox, monkeypatch):
     # 原有 provider 与备份行为不变
     assert data["models"]["providers"]["openai"]["apiKey"] == "k"
     assert (sandbox.oc_file.parent / "openclaw.json.bak-web").is_file()
+
+
+def test_enable_claude_code_respects_relay_base_from_env(sandbox, monkeypatch):
+    """.env 里配了中转站时，一键接入必须保留它，不能覆盖成官方端点。
+
+    （真实 bug：实现最初用 os.environ 读 base —— .env 不在进程环境里，
+    永远拿到空，然后把用户已配好的 ANTHROPIC_BASE_URL 静默覆盖成官方端点。）
+    """
+    sandbox.env_file.write_text(
+        "OPENAI_BASE_URL=https://api.openai.com/v1\n"
+        "ANTHROPIC_BASE_URL=https://my-relay.example.com\n",
+        encoding="utf-8")
+    monkeypatch.setattr(la.shutil, "which", lambda c: "/usr/bin/claude" if c == "claude" else None)
+    resp = sandbox.post("/api/settings/local-agents/enable", json={"id": "claude-code"})
+    assert resp.status_code == 200, resp.text
+    data = json.loads(sandbox.oc_file.read_text(encoding="utf-8"))
+    assert data["models"]["providers"]["anthropic"]["baseUrl"] == "https://my-relay.example.com"
 
 
 def test_enable_is_idempotent(sandbox, monkeypatch):

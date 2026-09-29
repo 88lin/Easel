@@ -1704,8 +1704,12 @@ async def api_local_agent_enable(req: LocalAgentEnableRequest):
     if not provider:
         raise HTTPException(400, f"{agent['label']} 暂无底座后端，无法免 key 接入")
     if provider == "claude-cli":
+        # base 必须读 .env（不是 os.environ）：面板/.env 里配的中转站或自建网关值
+        # 只在项目 .env 里，不在进程环境里 —— 用 os.environ 会永远拿到空，然后把
+        # 用户已配好的 baseUrl 静默覆盖成官方端点。
         note = _declare_anthropic_provider(
-            str(os.environ.get("ANTHROPIC_BASE_URL", "") or "https://api.anthropic.com"))
+            (_read_env().get("ANTHROPIC_BASE_URL") or "").strip().rstrip("/")
+            or "https://api.anthropic.com")
         # claude-cli 后端的模型走 provider=claude-cli；把主模型指过去
         primary_ref = "claude-cli/claude-sonnet-4-6"
     elif provider == "copilot-proxy":
