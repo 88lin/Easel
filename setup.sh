@@ -203,7 +203,8 @@ fi
 step "2/8" "准备 Node.js 工具链" "选择 npm registry"
 NPM_REGISTRY="${EASEL_NPM_REGISTRY:-}"
 if [ -z "$NPM_REGISTRY" ]; then
-    if npm ping --registry https://registry.npmjs.org >/dev/null 2>&1; then
+    if npm ping --registry https://registry.npmjs.org --fetch-timeout=5000 \
+        --fetch-retries=0 --fetch-retry-mintimeout=0 >/dev/null 2>&1; then
         NPM_REGISTRY="https://registry.npmjs.org"
         ok "npm registry: npmjs.org（连通性正常）"
     else
@@ -280,7 +281,14 @@ info "[1/2] 安装 Python 依赖与 easel CLI..."
 # 国内直连 pypi.org 装依赖（fastapi/playwright 等）经常超时；探测失败自动回落清华源。
 PIP_INDEX="${EASEL_PIP_INDEX:-}"
 if [ -z "$PIP_INDEX" ]; then
-    if python3 -c "import urllib.request;urllib.request.urlopen('https://pypi.org/simple/', timeout=4)" >/dev/null 2>&1; then
+    # timeout 8 兜底：urlopen 的 timeout=4 不含 DNS 解析卡死等极端情形（macOS 无
+    # coreutils timeout，command -v 判空时退化为仅靠 urlopen 自身超时）。
+    if command -v timeout >/dev/null 2>&1; then
+        PYPI_PROBE=(timeout 8 python3 -c "import urllib.request;urllib.request.urlopen('https://pypi.org/simple/', timeout=4)")
+    else
+        PYPI_PROBE=(python3 -c "import urllib.request;urllib.request.urlopen('https://pypi.org/simple/', timeout=4)")
+    fi
+    if "${PYPI_PROBE[@]}" >/dev/null 2>&1; then
         PIP_INDEX_ARGS=()
         ok "PyPI: pypi.org（连通性正常）"
     else

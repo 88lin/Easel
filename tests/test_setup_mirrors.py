@@ -166,3 +166,29 @@ def test_all_npm_installs_carry_registry_flag(tmp_path: Path) -> None:
                  and not line.strip().startswith("#")
                  and "echo" not in line]
     assert not offenders, f"以下 npm 安装命令未挂 NPM_REGISTRY_ARGS：{offenders}"
+
+
+@needs_bash
+def test_npm_ping_has_short_timeout(tmp_path: Path) -> None:
+    """连通性探测必须带短超时：npm 默认 fetch-timeout 是 300s，
+    国内网络下裸 ping 最坏会把用户卡在 step 2 五分钟，比原来更糟。
+    """
+    src = SETUP_SH.read_text(encoding="utf-8")
+    # 命令可能跨多行（续行符），把整段 step2 拼起来再断言
+    lines = src.splitlines()
+    start = next(i for i, l in enumerate(lines) if "npm ping" in l)
+    seg = []
+    for l in lines[start:start + 5]:
+        seg.append(l)
+        if not l.rstrip().endswith("\\"):
+            break
+    joined = "\n".join(seg)
+    assert "--fetch-timeout" in joined, "npm ping 必须显式限制超时"
+    assert "--fetch-retries=0" in joined, "探测不应重试（重试会把等待乘几倍）"
+
+
+@needs_bash
+def test_pypi_probe_guarded_by_timeout_command(tmp_path: Path) -> None:
+    """pip 探测在系统有 timeout(1) 时应被它兜底（urlopen 的 timeout 不含 DNS 卡死）。"""
+    src = SETUP_SH.read_text(encoding="utf-8")
+    assert "timeout 8 python3 -c" in src, "pypi 探测缺少 timeout 命令兜底"
