@@ -268,7 +268,6 @@ def _agnes_generate(base_url: str, api_key: str, model: str, prompt: str,
     return {"data": merged}
 
 
-
 def size_to_ratio(size: str) -> str:
     if ":" in size:
         return size
