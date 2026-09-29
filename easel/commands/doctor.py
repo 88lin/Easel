@@ -296,6 +296,20 @@ def cmd_doctor(_args) -> int:
     all_ok &= _check(".env (API Key)", env_ok,
                       "填 ANTHROPIC_API_KEY，或 EASEL_LLM_API_KEY + EASEL_LLM_BASE_URL")
 
+    # 3.5 本机 agent CLI：有免 key 通道时提示用户（.env 没配也可能是绿灯路径）。
+    # 不计入 all_ok —— 装不装 Claude Code 是用户的选择，不是环境故障。
+    try:
+        from easel.local_agents import summarize_local_agents
+        la = summarize_local_agents()
+        if la["installedCount"]:
+            usable = ", ".join(str(a["label"]) for a in la["agents"] if a["usableWithoutKey"])
+            detail = (f"检测到 {la['installedCount']} 个本机 agent CLI；"
+                      + (f"可免 API key 使用：{usable}" if usable
+                         else "暂无可直接接入底座的登录态"))
+            _check("本机 agent CLI", True, detail)
+    except Exception:  # noqa: BLE001  探测失败不阻塞 doctor
+        pass
+
     # .env 填了 ≠ setup 真的把 provider 写进了 openclaw；不对账就会「doctor 全绿但对话报错」。
     route_ok, route_detail = _primary_model_routable()
     all_ok &= _check("OpenClaw model routing", route_ok, route_detail)

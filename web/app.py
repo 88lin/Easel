@@ -1668,6 +1668,106 @@ async def api_settings_models_save(req: ModelSaveRequest):
     return resp
 
 
+class LocalAgentEnableRequest(BaseModel):
+    id: str
+
+
+@app.get("/api/settings/local-agents")
+async def api_local_agents():
+    """探测本机已装的 agent CLI（Claude Code / Gemini CLI / Codex…）。
+
+    目的：装了 Claude Code / Gemini CLI 且已登录的用户**不需要再填 API Key** ——
+    OpenClaw 底座有对应的 CLI 后端，直接复用 CLI 自己的登录态。返回值同时如实
+    标出哪些 CLI 暂无底座后端（installed 但 supported=false），不假装支持。
+    """
+    from easel.local_agents import summarize_local_agents
+    return summarize_local_agents()
+
+
+@app.post("/api/settings/local-agents/enable")
+async def api_local_agent_enable(req: LocalAgentEnableRequest):
+    """把一个本机 CLI agent（目前支持 claude-code / gemini-cli）接入 Easel。
+
+    实现是把对应 provider 写进 openclaw.json（复用 _sync_anthropic_provider 的
+    原子写套路）。CLI 登录态本身由 openclaw 的 auth store 管理 —— 这里只负责
+    「声明 provider 并把主模型切过去」；未登录的 CLI 会在下一轮对话时暴露
+    认证错误，返回体里用 hint 提前告知用户先去终端登录。
+    """
+    from easel.local_agents import detect_local_agents
+    agents = {a["id"]: a for a in detect_local_agents()}
+    agent = agents.get(req.id)
+    if not agent:
+        raise HTTPException(404, f"未知的本机 agent：{req.id}")
+    if not agent["installed"]:
+        raise HTTPException(400, f"本机没有找到 {agent['label']}（PATH 上没有 {agent['command'] or '可执行文件'}）")
+    provider = agent["openclawProvider"]
+    if not provider:
+        raise HTTPException(400, f"{agent['label']} 暂无底座后端，无法免 key 接入")
+    if provider == "claude-cli":
+        note = _declare_anthropic_provider(
+            str(os.environ.get("ANTHROPIC_BASE_URL", "") or "https://api.anthropic.com"))
+        # claude-cli 后端的模型走 provider=claude-cli；把主模型指过去
+        primary_ref = "claude-cli/claude-sonnet-4-6"
+    elif provider == "copilot-proxy":
+        note = "GitHub Copilot 接入需要先运行 openclaw models auth login-github-copilot"
+        primary_ref = ""
+    else:
+        note = ""
+        primary_ref = ""
+    if primary_ref:
+        _oc_note = _set_openclaw_primary(primary_ref)
+        note = f"{note}；{_oc_note}" if note else _oc_note
+    return {"ok": True, "agent": agent, "note": note or "已接入"}
+
+
+def _set_openclaw_primary(primary_ref: str) -> str:
+    """把 agents.defaults.model.primary 指到给定 provider/model（原子写 + 备份）。"""
+    try:
+        oc = Path.home() / '.openclaw-easel' / 'openclaw.json'
+        if not oc.is_file():
+            return 'openclaw.json 不存在，请先运行 bash setup.sh'
+        data = json.loads(oc.read_text(encoding='utf-8'))
+        ref = data.setdefault('agents', {}).setdefault('defaults', {}).setdefault('model', {})
+        if ref.get('primary') == primary_ref:
+            return ''
+        ref['primary'] = primary_ref
+        shutil.copy2(oc, oc.parent / (oc.name + '.bak-web'))
+        tmp = oc.parent / (oc.name + '.tmp')
+        tmp.write_text(json.dumps(data, ensure_ascii=False, indent=2), encoding='utf-8')
+        tmp.replace(oc)
+        return f'主模型已切到 {primary_ref}（下一条消息生效）'
+    except Exception as e:  # noqa: BLE001
+        return f'主模型切换失败：{e}'
+
+
+def _declare_anthropic_provider(base: str) -> str:
+    """在 openclaw.json 里声明 anthropic provider（apiKey 缺省走 CLI 登录态/auth store）。
+
+    与 setup.sh 的 oc_write_anthropic 同构；不写 key 时 agent 侧会回落到 claude-cli
+    后端复用本机 Claude Code 的登录。原子写 + .bak-web 备份。
+    """
+    try:
+        oc = Path.home() / '.openclaw-easel' / 'openclaw.json'
+        if not oc.is_file():
+            return 'openclaw.json 不存在，请先运行 bash setup.sh'
+        data = json.loads(oc.read_text(encoding='utf-8'))
+        providers = data.setdefault('models', {}).setdefault('providers', {})
+        prov = providers.get('anthropic')
+        if isinstance(prov, dict) and prov.get('baseUrl') == base:
+            return ''
+        new_prov = dict(prov) if isinstance(prov, dict) else {'models': []}
+        new_prov['baseUrl'] = base
+        new_prov.setdefault('models', [])
+        providers['anthropic'] = new_prov
+        shutil.copy2(oc, oc.parent / (oc.name + '.bak-web'))
+        tmp = oc.parent / (oc.name + '.tmp')
+        tmp.write_text(json.dumps(data, ensure_ascii=False, indent=2), encoding='utf-8')
+        tmp.replace(oc)
+        return 'anthropic provider 已声明'
+    except Exception as e:  # noqa: BLE001
+        return f'anthropic provider 声明失败：{e}'
+
+
 class SelftestRequest(BaseModel):
     channel: str = "chat"
 

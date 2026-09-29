@@ -5,8 +5,9 @@ import type { JobView } from './EnvBoard';
 import {
   fetchEnvTools, startEnvInstall, fetchEnvJob,
   fetchModelChannels, runChannelSelftest, saveModelConfig,
+  fetchLocalAgents, enableLocalAgent,
 } from '../lib/api';
-import type { EnvTool, ModelRow, SelftestResult } from '../lib/api';
+import type { EnvTool, ModelRow, SelftestResult, LocalAgentInfo } from '../lib/api';
 import { IconSlidersHorizontal, IconPackage, IconEllipsis } from './settingsIcons';
 
 interface Props { onClose: () => void; }
@@ -151,6 +152,33 @@ export default function SettingsPanel({ onClose }: Props) {
   const [selftest, setSelftest] = useState<{ testedAt: number; byBase: Record<string, SelftestResult> } | null>(null);
   const [testing, setTesting] = useState(false);
   const [selftestNote, setSelftestNote] = useState('');
+  // 本机 agent CLI（Claude Code / Gemini CLI…）：装了并登录过就免 API key
+  const [localAgents, setLocalAgents] = useState<LocalAgentInfo[]>([]);
+  const [localAgentsErr, setLocalAgentsErr] = useState('');
+  const [enabling, setEnabling] = useState('');
+  const [localAgentNote, setLocalAgentNote] = useState('');
+
+  useEffect(() => {
+    let alive = true;
+    fetchWithRetry(() => fetchLocalAgents(), 3, 10000)
+      .then((d) => { if (alive) setLocalAgents(d.agents || []); })
+      .catch((e) => { if (alive) setLocalAgentsErr(e instanceof Error ? e.message : '探测失败'); });
+    return () => { alive = false; };
+  }, []);
+
+  const doEnableAgent = useCallback(async (id: string) => {
+    setEnabling(id);
+    setLocalAgentNote('');
+    try {
+      const d = await enableLocalAgent(id);
+      setLocalAgentNote(d.note || '已接入');
+      setLocalAgents((as) => as.map((a) => (a.id === id ? { ...a, configured: true } : a)));
+    } catch (e) {
+      setLocalAgentNote(e instanceof Error ? e.message : '接入失败');
+    } finally {
+      setEnabling('');
+    }
+  }, []);
 
   useEffect(() => {
     let alive = true;
@@ -486,6 +514,43 @@ export default function SettingsPanel({ onClose }: Props) {
                     </div>
                     {renderBoard(chatRows, { onRow: (i, p) => updateRow(setChatRows, i, p), onPrimary: setPrimaryRow, onRemove: removeRow })}
                     <div className="add-row" onClick={addProvider}>＋ 添加供应商（填名称 / 模型 / Base URL / Key；点「设为主」切换生效通道）</div>
+                    {(() => {
+                      // 本机 agent 区块：装了 Claude Code / Gemini CLI 并登录过的用户不需要填 API Key。
+                      // 只展示「已装」的行 —— 没装的用户看一眼全是灰的只会困惑。
+                      const shown = localAgents.filter((a) => a.installed);
+                      if (localAgentsErr) return <div className="foot-note">本机 agent 探测失败：{localAgentsErr}</div>;
+                      if (!shown.length) return null;
+                      const usable = shown.filter((a) => a.supported);
+                      return (
+                        <div className="local-agents">
+                          <div className="la-head">
+                            本机 Agent
+                            <span className="desc">
+                              {usable.length
+                                ? `检测到可免 API Key 使用：${usable.map((a) => a.label).join('、')}`
+                                : '检测到的 CLI 暂无底座后端，仍需填 API Key'}
+                            </span>
+                          </div>
+                          {shown.map((a) => (
+                            <div className="la-row" key={a.id}>
+                              <span className="la-name">{a.label}<small>{a.path || a.command}</small></span>
+                              <span className={`la-state ${a.configured ? 'ok' : a.supported ? 'todo' : 'na'}`}>
+                                {a.configured ? '已接入' : a.supported ? '可接入' : '不支持'}
+                              </span>
+                              {a.supported && !a.configured ? (
+                                <button
+                                  className="btn btn-sm"
+                                  disabled={enabling === a.id}
+                                  onClick={() => void doEnableAgent(a.id)}
+                                >{enabling === a.id ? '接入中…' : '一键接入'}</button>
+                              ) : <span />}
+                              <span className="la-hint">{a.loginHint}</span>
+                            </div>
+                          ))}
+                          {localAgentNote && <div className="foot-note">{localAgentNote}</div>}
+                        </div>
+                      );
+                    })()}
                     <div className="foot-note">改完点右上角「保存配置」（key 留空=不改）；自动降级链随统一网关接入开放。</div>
                   </section>
                 )}

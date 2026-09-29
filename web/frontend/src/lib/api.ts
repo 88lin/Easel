@@ -817,3 +817,34 @@ export function runChannelSelftest(channel: string): Promise<{ channel: string; 
     body: JSON.stringify({ channel }),
   });
 }
+
+export interface LocalAgentInfo {
+  id: string;
+  label: string;
+  installed: boolean;
+  command: string;
+  path: string;
+  openclawProvider: string | null;
+  configProvider?: string | null;
+  supported: boolean;
+  configured: boolean;
+  usableWithoutKey: boolean;
+  loginHint: string;
+}
+
+export function fetchLocalAgents(): Promise<{
+  agents: LocalAgentInfo[];
+  installedCount: number;
+  usableWithoutKeyCount: number;
+  usableWithoutKey: string[];
+}> {
+  return request('/api/settings/local-agents');
+}
+
+export function enableLocalAgent(id: string): Promise<{ ok: boolean; note: string; agent: LocalAgentInfo }> {
+  return request('/api/settings/local-agents/enable', {
+    method: 'POST',
+    headers: { 'Content-Type': 'application/json' },
+    body: JSON.stringify({ id }),
+  });
+}
