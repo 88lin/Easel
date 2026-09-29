@@ -72,7 +72,7 @@ def _out(tmp_path) -> str:
 
 @pytest.mark.parametrize("base", [
     "https://api.agnes-ai.cn/v1",
-    "https://AGNES-ai.example.com/v1",
+    "https://AGNES-AI.CN/v1",
 ])
 def test_detect_provider_matches_agnes_host(base: str) -> None:
     assert ai_image.detect_provider(base) == "agnes"
@@ -239,3 +239,18 @@ def test_openai_sync_paths_unchanged(env, tmp_path, monkeypatch) -> None:
     )
     ai_image.cmd_img2img(args)
     assert captured["url"] == f"{OPENAI_BASE}/images/edits"
+
+
+# ── detect_provider 域名匹配的防误判（审计补） ──────────────────
+
+def test_detect_provider_rejects_lookalike_domains():
+    """含 agnes 字母序列的无关域名不得误判成 Agnes（子串匹配的历史 bug）。"""
+    for url in ("https://api.stagneschurch.com/v1", "https://api.magnes.com/v1",
+                "https://notagnes.example.com/v1"):
+        assert ai_image.detect_provider(url) == "openai", url
+
+
+def test_detect_provider_accepts_known_agnes_domains():
+    for url in ("https://api.agnes-ai.cn/v1", "https://apihub.agnes-ai.com/v1",
+                "https://x.agnes-ai.cn/v1"):
+        assert ai_image.detect_provider(url) == "agnes", url

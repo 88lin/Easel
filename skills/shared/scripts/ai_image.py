@@ -191,9 +191,16 @@ def detect_provider(base_url: str) -> str:
     输入图放在 extra_body.image（官方文档：docs/agnes-image-21-flash）。
     未识别的 base_url 一律返回 "openai"，走原有标准分支，零影响。
     """
+    # 已知 Agnes 域名（官方文档 api.agnes-ai.cn；apihub.agnes-ai.com 见仓库内引用）。
+    AGNES_DOMAINS = ("agnes-ai.cn", "agnes-ai.com")
     host = (urllib.parse.urlsplit(base_url).hostname or "").lower()
-    if "agnes" in host:
-        return "agnes"
+    # 对已知 Agnes 域名做精确后缀匹配，不用子串包含 —— 否则像
+    # stagneschurch.com / magnes.com 这类「含 agnes 字母序列」的无关域名
+    # 会被误判成 Agnes，被打到不存在端点的分支上全部报错（404）。
+    # 反过来说也不能只写 agnes.ai：真实域名是 agnes-ai.cn / agnes-ai.com。
+    for domain in AGNES_DOMAINS:
+        if host == domain or host.endswith("." + domain):
+            return "agnes"
     return "openai"
 
 
