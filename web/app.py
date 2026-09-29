@@ -1712,15 +1712,20 @@ async def api_local_agent_enable(req: LocalAgentEnableRequest):
             or "https://api.anthropic.com")
         # claude-cli 后端的模型走 provider=claude-cli；把主模型指过去
         primary_ref = "claude-cli/claude-sonnet-4-6"
-    elif provider == "copilot-proxy":
-        note = "GitHub Copilot 接入需要先运行 openclaw models auth login-github-copilot"
-        primary_ref = ""
-    else:
+    elif provider == "google-gemini-cli":
+        # google 插件的 CLI 后端默认启用（enabledByDefault），无需写 provider 块；
+        # 接入 = 把主模型指到 CLI 后端的一个真实模型上。
+        primary_ref = "google-gemini-cli/gemini-3.1-pro-preview"
         note = ""
-        primary_ref = ""
+    else:
+        # 不该到这：supported 的 CLI 都应在上面有明确分支。新后端接入时必须补写，
+        # 否则会像 gemini 最初那样返回「已接入」却什么都没写（假成功）。
+        raise HTTPException(500, f"{agent['label']} 的接入流程未实现（openclawProvider={provider}）")
     if primary_ref:
         _oc_note = _set_openclaw_primary(primary_ref)
         note = f"{note}；{_oc_note}" if note else _oc_note
+        if not _oc_note:
+            note = f"已接入（主模型此前已是 {primary_ref}）"
     return {"ok": True, "agent": agent, "note": note or "已接入"}
 
 

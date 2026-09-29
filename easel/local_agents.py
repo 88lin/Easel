@@ -69,9 +69,12 @@ KNOWN_AGENT_CLIS: tuple[dict[str, object], ...] = (
         "id": "copilot-cli",
         "label": "GitHub Copilot CLI",
         "commands": ("copilot",),
-        "openclaw_provider": "copilot-proxy",
-        "config_provider": "copilot-proxy",
-        "login_hint": "在终端完成 Copilot 登录后可用于对话。",
+        # 底座的 copilot-proxy 是连到 localhost:3000 的本地代理 provider（cliBackends
+        # 为空），跟「本机装了 copilot CLI」没有因果关系 —— 装了 CLI 也不代表能免 key
+        # 用，所以要另起代理服务。这里如实标为不支持，避免给出假的「一键接入」。
+        "openclaw_provider": None,
+        "config_provider": None,
+        "login_hint": "Copilot 走底座的 copilot-proxy 需要另行运行本地代理（默认 localhost:3000），不能用本机 CLI 登录态免 key。",
     },
 )
 

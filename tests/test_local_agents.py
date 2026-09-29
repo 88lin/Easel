@@ -183,6 +183,34 @@ def test_enable_claude_code_respects_relay_base_from_env(sandbox, monkeypatch):
     assert data["models"]["providers"]["anthropic"]["baseUrl"] == "https://my-relay.example.com"
 
 
+def test_enable_gemini_cli_writes_primary(sandbox, monkeypatch):
+    """Gemini CLI 接入必须真的写点什么。
+
+    真实 bug：最初 gemini 分支只设 note、primary_ref 为空 → 返回
+    「已接入」但 openclaw.json 一个字节都没变（假成功）。google 插件的
+    CLI 后端默认启用，所以接入动作就是切主模型。
+    """
+    monkeypatch.setattr(la.shutil, "which", lambda c: "/usr/bin/gemini" if c == "gemini" else None)
+    resp = sandbox.post("/api/settings/local-agents/enable", json={"id": "gemini-cli"})
+    assert resp.status_code == 200, resp.text
+    data = json.loads(sandbox.oc_file.read_text(encoding="utf-8"))
+    assert data["agents"]["defaults"]["model"]["primary"].startswith("google-gemini-cli/"), \
+        "gemini 接入没有切换主模型 = 假成功"
+
+
+def test_every_supported_cli_has_an_enable_path(sandbox, monkeypatch):
+    """所有 supported=true 的 CLI 都必须能接入（否则就是假承诺）。
+
+    这条是防回归：新增后端时若忘了写接入分支，会落到 500 而不是静默成功。
+    """
+    monkeypatch.setattr(la.shutil, "which", lambda c: f"/usr/bin/{c}")
+    for a in la.detect_local_agents():
+        if not a["supported"]:
+            continue
+        resp = sandbox.post("/api/settings/local-agents/enable", json={"id": a["id"]})
+        assert resp.status_code == 200, f"{a['id']} 声称可接入却失败：{resp.status_code} {resp.text[:200]}"
+
+
 def test_enable_is_idempotent(sandbox, monkeypatch):
     """重复接入不该反复改写配置（第二次没有变化 → note 为空）。"""
     monkeypatch.setattr(la.shutil, "which", lambda c: "/usr/bin/claude" if c == "claude" else None)
