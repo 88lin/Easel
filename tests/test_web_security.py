@@ -274,12 +274,20 @@ def test_http_path_falls_back_without_httpx(monkeypatch):
 
 def test_ready_probe_hits_chat_completions_not_models():
     """探针不能打 /v1/models：那个路径会被网关控制台 SPA 的 catch-all 接走，端点没开也返回
-    200（body 是 HTML 首页），于是只要网关活着就恒为 True —— 等于没探，每轮对话直接撞 404。"""
+    200（body 是 HTML 首页），于是只要网关活着就恒为 True —— 等于没探，每轮对话直接撞 404。
+
+    探针的 **端口** 同样不能写死：Easel 用 --profile easel，OpenClaw 对非默认 profile
+    分配的端口不是 18789（easel → 37289），写死就恒探不通、对话悄悄退回 CLI 冷启动路径。
+    所以 URL 一律走 easel/gateway_endpoint 解析。"""
     import inspect
     # 去掉 docstring 再比 —— 注释里本来就要写清为什么不能探 /v1/models
     body = inspect.getsource(web._gateway_http_ready).split('"""')[-1]
-    assert "/v1/chat/completions" in body
+    assert "chat_completions_url()" in body
+    assert "127.0.0.1" not in body
     assert "/v1/models" not in body
+
+    from easel.gateway_endpoint import chat_completions_url
+    assert chat_completions_url().endswith("/v1/chat/completions")
 
 
 @pytest.mark.parametrize("code,expected", [(400, True), (404, False), (500, False)])

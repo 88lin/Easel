@@ -12,7 +12,7 @@
 - **免 AppID/AppSecret、免 IP 白名单**，未认证号也能用；
 - 官方开发者 API（AppID/AppSecret + 出口 IP 白名单）保留为 `--official-api` 回退，前端 UI 默认隐藏。
 
-平台标识 `wechat-oa`，web 默认 `:7860`，OpenClaw gateway 默认 `:18789`。
+平台标识 `wechat-oa`，web 默认 `:7860`，OpenClaw gateway 端口由 OpenClaw 自行分配（`easel` profile → `37289`，非 `18789`），Easel 自动解析。
 
 ---
 

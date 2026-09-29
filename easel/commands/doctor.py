@@ -11,6 +11,7 @@ import urllib.request
 import urllib.error
 from pathlib import Path
 
+from easel.gateway_endpoint import healthz_url, port_source, resolve_gateway_port
 from easel.openclaw_cmd import openclaw_base_cmd
 
 # 项目根目录（Easel/）
@@ -115,9 +116,13 @@ def _chromium_available() -> bool:
 
 
 def _gateway_healthy() -> bool:
-    """Check OpenClaw gateway is running via healthz endpoint."""
+    """Check OpenClaw gateway is running via healthz endpoint.
+
+    端口走 easel/gateway_endpoint.py：非默认 profile（Easel 的 ``--profile easel``）
+    不是 18789，写死就会「gateway 活着、doctor 报 FAIL」。
+    """
     try:
-        with urllib.request.urlopen("http://127.0.0.1:18789/healthz", timeout=5) as response:
+        with urllib.request.urlopen(healthz_url(), timeout=5) as response:
             return response.status == 200
     except (OSError, urllib.error.URLError):
         return False
@@ -297,8 +302,8 @@ def cmd_doctor(_args) -> int:
 
     # 4. OpenClaw gateway running
     gw_ok = _gateway_healthy()
-    all_ok &= _check("OpenClaw gateway (localhost:18789)", gw_ok,
-                      "运行 python -m easel gateway start")
+    all_ok &= _check(f"OpenClaw gateway (localhost:{resolve_gateway_port()})", gw_ok,
+                      f"运行 python -m easel gateway start（端口来自 {port_source()}）")
 
     # 5. Skills synced
     synced, synced_detail = _skills_synced()
