@@ -3,6 +3,18 @@
   <head>
     <meta charset="UTF-8" />
     <script>
+      // Apply the saved theme before styles load to avoid a bright flash on reload.
+      (function () {
+        var theme;
+        try { theme = localStorage.getItem('easel_theme'); } catch (_) { /* Storage may be unavailable. */ }
+        if (theme !== 'light' && theme !== 'dark') {
+          theme = window.matchMedia('(prefers-color-scheme: dark)').matches ? 'dark' : 'light';
+        }
+        document.documentElement.dataset.theme = theme;
+        document.documentElement.style.colorScheme = theme;
+      })();
+    </script>
+    <script>
       // 子路径代理下必须带结尾斜杠，否则相对资源路径(./assets)会解析到上一级 → 404 白屏。
       // 若当前路径无结尾斜杠且末段不像文件名(无扩展名)，自动补斜杠后重载。
       (function () {

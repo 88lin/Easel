@@ -8,6 +8,7 @@ import {
   IconDashboard,
 } from './icons';
 import { IconGear } from './settingsIcons';
+import ThemeToggle from './ThemeToggle';
 
 export type Page = 'dashboard' | 'chat' | 'trends' | 'ideas' | 'calendar' | 'publish' | 'breakdown' | 'skills' | 'outputs' | 'accounts' | 'profile';
 
@@ -117,6 +118,7 @@ export default function Sidebar({
         <div className="sidebar-logo">
           <img className="sidebar-logo-icon" src="./static/easel-icon-transparent.png" alt="" />
           <h1>Easel</h1>
+          <ThemeToggle />
         </div>
         <select
           className="persona-select"

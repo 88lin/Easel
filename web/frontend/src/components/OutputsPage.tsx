@@ -18,14 +18,16 @@ const KIND_LABEL: Record<string, string> = {
   poster: '海报', audio: '音频', other: '其他',
 };
 const STATUS_LABEL: Record<string, string> = { draft: '草稿', ready: '待发', published: '已发' };
-const STATUS_COLOR: Record<string, string> = { draft: '#94a3b8', ready: '#d97706', published: '#16a34a' };
+const STATUS_COLOR: Record<string, string> = { draft: 'var(--text-tertiary)', ready: 'var(--amber)', published: 'var(--green)' };
 
 const badge: CSSProperties = {
   fontSize: 11, padding: '1px 7px', borderRadius: 999,
-  background: 'rgba(0,0,0,0.05)', color: 'var(--text-secondary)', whiteSpace: 'nowrap',
+  background: 'var(--surface-hover)', color: 'var(--text-secondary)', whiteSpace: 'nowrap',
 };
 const statusBadge = (s: string): CSSProperties => ({
-  ...badge, background: `${STATUS_COLOR[s] || '#94a3b8'}22`, color: STATUS_COLOR[s] || '#64748b',
+  ...badge,
+  background: `color-mix(in srgb, ${STATUS_COLOR[s] || 'var(--text-tertiary)'} 13%, transparent)`,
+  color: STATUS_COLOR[s] || 'var(--text-secondary)',
 });
 
 function kindIcon(kind: string | undefined, size = 30) {
