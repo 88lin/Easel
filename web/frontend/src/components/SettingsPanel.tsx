@@ -156,6 +156,8 @@ export default function SettingsPanel({ onClose }: Props) {
   const [localAgents, setLocalAgents] = useState<LocalAgentInfo[]>([]);
   const [localAgentsErr, setLocalAgentsErr] = useState('');
   const [enabling, setEnabling] = useState('');
+  // 每个本机 agent 行上选中的模型（'' = 用该家默认）。
+  const [laModels, setLaModels] = useState<Record<string, string>>({});
   const [localAgentNote, setLocalAgentNote] = useState('');
 
   useEffect(() => {
@@ -166,11 +168,11 @@ export default function SettingsPanel({ onClose }: Props) {
     return () => { alive = false; };
   }, []);
 
-  const doEnableAgent = useCallback(async (id: string) => {
+  const doEnableAgent = useCallback(async (id: string, model = '') => {
     setEnabling(id);
     setLocalAgentNote('');
     try {
-      const d = await enableLocalAgent(id);
+      const d = await enableLocalAgent(id, model);
       setLocalAgentNote(d.note || '已接入');
       setLocalAgents((as) => as.map((a) => (a.id === id ? { ...a, configured: true } : a)));
     } catch (e) {
@@ -537,11 +539,23 @@ export default function SettingsPanel({ onClose }: Props) {
                               <span className={`la-state ${a.configured ? 'ok' : a.supported ? 'todo' : 'na'}`}>
                                 {a.configured ? '已接入' : a.supported ? '可接入' : '不支持'}
                               </span>
+                              {a.supported && !a.configured && (a.models?.length ?? 0) > 0 && (
+                                <select
+                                  className="la-model"
+                                  value={laModels[a.id] ?? ''}
+                                  onChange={(e) => setLaModels((m) => ({ ...m, [a.id]: e.target.value }))}
+                                >
+                                  <option value="">默认模型</option>
+                                  {(a.models ?? []).map((m) => (
+                                    <option key={m.id} value={m.id}>{m.name}</option>
+                                  ))}
+                                </select>
+                              )}
                               {a.supported && !a.configured ? (
                                 <button
                                   className="btn btn-sm"
                                   disabled={enabling === a.id}
-                                  onClick={() => void doEnableAgent(a.id)}
+                                  onClick={() => void doEnableAgent(a.id, laModels[a.id] ?? '')}
                                 >{enabling === a.id ? '接入中…' : '一键接入'}</button>
                               ) : <span />}
                               <span className="la-hint">{a.loginHint}</span>

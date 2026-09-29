@@ -1323,6 +1323,7 @@ textarea.field { resize: vertical; min-height: 90px; }
 .settings-overlay .la-name small { color: var(--text-tertiary); font-size: 11px; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
 .settings-overlay .la-state { font-size: 11px; text-align: center; border-radius: 999px; padding: 1px 6px; border: 1px solid var(--border); }
 .settings-overlay .la-state.ok { color: var(--green); border-color: var(--green); }
+.settings-overlay .la-model { max-width: 180px; font-size: 12px; padding: 2px 6px; border: 1px solid var(--border); border-radius: 6px; background: var(--bg, transparent); color: inherit; }
 .settings-overlay .la-state.todo { color: var(--text); }
 .settings-overlay .la-state.na { color: var(--text-tertiary); }
 .settings-overlay .la-hint { font-size: 11px; color: var(--text-tertiary); min-width: 0; }

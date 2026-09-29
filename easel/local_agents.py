@@ -100,6 +100,50 @@ def _configured_providers() -> set[str]:
     return {k for k in providers if isinstance(k, str)}
 
 
+def catalog_for_provider(openclaw_provider: str | None) -> list[dict[str, object]]:
+    """读底座插件清单，返回某 CLI 后端的可选模型目录。
+
+    数据源：openclaw 安装目录下 extensions/<插件>/openclaw.plugin.json 的
+    modelCatalog.providers[<provider>].models[]（claude-cli 9 个、
+    google-gemini-cli 10 个）。给前端下拉列表用，用户接入后不用手打模型名。
+    找不到插件文件 / 无该 provider 时返回空列表 —— 前端退化为文本框，不猜。
+    """
+    if not openclaw_provider:
+        return []
+    plugin_dirs = [
+        Path(__file__).resolve().parent.parent / "node_modules" / "openclaw" / "dist" / "extensions",
+        Path.home() / ".npm-global" / "lib" / "node_modules" / "openclaw" / "dist" / "extensions",
+    ]
+    # 注意：插件清单里 providers 的键 ≠ CLI 后端 id —— claude-cli 后端的模型挂在
+    # "claude-cli" 键下，而 google 插件挂在 "google" 键下（真机验证发现）。
+    provider_key_map = {"claude-cli": "claude-cli", "google-gemini-cli": "google"}
+    # 插件目录名：claude-cli 后端在 anthropic 插件里，google-gemini-cli 在 google 插件里。
+    plugin_map = {"claude-cli": "anthropic", "google-gemini-cli": "google"}
+    ext = plugin_map.get(openclaw_provider)
+    if not ext:
+        return []
+    for base in plugin_dirs:
+        manifest = base / ext / "openclaw.plugin.json"
+        if not manifest.is_file():
+            continue
+        try:
+            data = json.loads(manifest.read_text(encoding="utf-8"))
+        except (OSError, ValueError):
+            continue
+        catalog_key = provider_key_map.get(openclaw_provider, openclaw_provider)
+        prov = ((data.get("modelCatalog") or {}).get("providers") or {}).get(catalog_key) or {}
+        models = []
+        for m in prov.get("models") or []:
+            if isinstance(m, dict) and m.get("id"):
+                models.append({
+                    "id": m["id"],
+                    "name": m.get("name") or m["id"],
+                    "contextWindow": m.get("contextWindow"),
+                })
+        return models
+    return []
+
+
 def detect_local_agents() -> list[dict[str, object]]:
     """扫一遍 PATH，返回每个已知 agent CLI 的探测结果。
 
@@ -139,6 +183,8 @@ def detect_local_agents() -> list[dict[str, object]]:
             "configured": is_configured,
             "usableWithoutKey": bool(installed and provider is not None),
             "loginHint": spec["login_hint"],
+            # 可选模型目录（有后端的 CLI 才有；空列表 = 前端退化为手填）。
+            "models": catalog_for_provider(provider),  # type: ignore[arg-type]
         })
     return out
 

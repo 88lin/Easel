@@ -818,6 +818,12 @@ export function runChannelSelftest(channel: string): Promise<{ channel: string; 
   });
 }
 
+export interface LocalAgentModel {
+  id: string;
+  name: string;
+  contextWindow?: number | null;
+}
+
 export interface LocalAgentInfo {
   id: string;
   label: string;
@@ -830,6 +836,7 @@ export interface LocalAgentInfo {
   configured: boolean;
   usableWithoutKey: boolean;
   loginHint: string;
+  models?: LocalAgentModel[];
 }
 
 export function fetchLocalAgents(): Promise<{
@@ -841,10 +848,10 @@ export function fetchLocalAgents(): Promise<{
   return request('/api/settings/local-agents');
 }
 
-export function enableLocalAgent(id: string): Promise<{ ok: boolean; note: string; agent: LocalAgentInfo }> {
+export function enableLocalAgent(id: string, model = ''): Promise<{ ok: boolean; note: string; agent: LocalAgentInfo }> {
   return request('/api/settings/local-agents/enable', {
     method: 'POST',
     headers: { 'Content-Type': 'application/json' },
-    body: JSON.stringify({ id }),
+    body: JSON.stringify({ id, model }),
   });
 }

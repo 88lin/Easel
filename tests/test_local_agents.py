@@ -220,3 +220,79 @@ def test_enable_is_idempotent(sandbox, monkeypatch):
     second = sandbox.post("/api/settings/local-agents/enable", json={"id": "claude-code"})
     assert second.status_code == 200
     assert sandbox.oc_file.read_text(encoding="utf-8") == snap, "无变化时不该重写"
+
+
+# ── 模型目录 + enable 选模型（审计后补全：像 AionUi 一样可下拉选模型） ──
+
+def test_catalog_returns_real_models_for_claude_cli():
+    """claude-cli 的模型目录从插件清单真实读出（本机装了 openclaw 才有）。"""
+    cat = la.catalog_for_provider("claude-cli")
+    if not cat:  # CI 环境可能没有 openclaw 安装
+        import pytest; pytest.skip("openclaw 未安装")
+    ids = {m["id"] for m in cat}
+    assert "claude-sonnet-4-6" in ids
+    assert all(m.get("name") for m in cat)
+
+
+def test_catalog_empty_for_unknown_or_unsupported():
+    assert la.catalog_for_provider(None) == []
+    assert la.catalog_for_provider("copilot-proxy") == []
+    assert la.catalog_for_provider("nonexistent-backend") == []
+
+
+def test_detect_local_agents_includes_models_field(sandbox):
+    for a in la.detect_local_agents():
+        assert "models" in a, a["id"]
+        if a["supported"]:
+            assert isinstance(a["models"], list)
+        else:
+            assert a["models"] == []
+
+
+def test_enable_with_chosen_model_switches_primary(sandbox, monkeypatch):
+    """enable 传 model=claude-opus-5-5 → 主模型必须是那个，不是默认 sonnet。"""
+    monkeypatch.setattr(la.shutil, "which", lambda c: "/usr/bin/claude" if c == "claude" else None)
+    resp = sandbox.post("/api/settings/local-agents/enable",
+                        json={"id": "claude-code", "model": "claude-opus-5-5"})
+    assert resp.status_code == 200, resp.text
+    data = json.loads(sandbox.oc_file.read_text(encoding="utf-8"))
+    assert data["agents"]["defaults"]["model"]["primary"] == "claude-cli/claude-opus-5-5"
+
+
+def test_enable_rejects_model_not_in_catalog(sandbox, monkeypatch):
+    """目录外模型 → 400 拒绝，绝不写入不存在的模型引用。
+
+    sandbox 里没有 openclaw 插件文件，catalog_for_provider 返回空 → 生产上
+    「目录为空时无法校验」；这里 mock 一份真实形状的目录来钉住校验逻辑。
+    """
+    monkeypatch.setattr(la.shutil, "which", lambda c: "/usr/bin/claude" if c == "claude" else None)
+    monkeypatch.setattr(la, "catalog_for_provider",
+                        lambda p: [{"id": "claude-sonnet-4-6", "name": "x", "contextWindow": 1},
+                                   {"id": "claude-opus-5-5", "name": "y", "contextWindow": 1}] if p == "claude-cli" else [])
+    resp = sandbox.post("/api/settings/local-agents/enable",
+                        json={"id": "claude-code", "model": "claude-not-a-model"})
+    assert resp.status_code == 400
+    assert "可选" in resp.text
+
+
+def test_enable_default_model_unchanged_when_no_model_param(sandbox, monkeypatch):
+    """不传 model → 行为与此前完全一致（claude 默认 sonnet-4-6）。"""
+    monkeypatch.setattr(la.shutil, "which", lambda c: "/usr/bin/claude" if c == "claude" else None)
+    resp = sandbox.post("/api/settings/local-agents/enable", json={"id": "claude-code"})
+    assert resp.status_code == 200
+    data = json.loads(sandbox.oc_file.read_text(encoding="utf-8"))
+    assert data["agents"]["defaults"]["model"]["primary"] == "claude-cli/claude-sonnet-4-6"
+
+
+def test_gemini_cli_catalog_real(tmp_path, monkeypatch):
+    """google 插件的目录键是 'google'（不是后端 id），gemini 模型必须能读到。
+
+    注意不能用 sandbox fixture：它会 monkeypatch Path.home 到 tmp_path，
+    导致 catalog_for_provider 找不到真实安装的 openclaw 插件清单。
+    """
+    cat = la.catalog_for_provider("google-gemini-cli")
+    if not cat:
+        import pytest; pytest.skip("openclaw 未安装")
+    ids = {m["id"] for m in cat}
+    assert "gemini-3.1-pro-preview" in ids
+    assert len(cat) >= 5
