@@ -260,7 +260,8 @@ fi
 # ---- 5. 安装 easel CLI ----
 step "5/8" "安装 Easel 运行依赖" "Web · 媒体 · 浏览器发布"
 info "[1/2] 安装 Python 依赖与 easel CLI..."
-PIP_ARGS=(install -e "$PROJECT_ROOT" --progress-bar on)
+# --prefer-binary: 新版 biliup 常先发 sdist 后补 wheel，源码构建要求最新 rustc；优先选有 wheel 的旧版本
+PIP_ARGS=(install -e "$PROJECT_ROOT" --prefer-binary --progress-bar on)
 if [ "$(id -u)" -eq 0 ]; then
     PIP_ARGS+=(--root-user-action=ignore)
     warn "当前以 root 安装；生产服务器建议使用虚拟环境"
