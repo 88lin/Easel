@@ -195,9 +195,25 @@ else
 fi
 
 # ---- 2. npm 源 ----
-step "2/8" "准备 Node.js 工具链" "设置 npm registry"
-npm config set registry https://registry.npmjs.org 2>/dev/null
-ok "npm registry: npmjs.org"
+# 镜像选择：EASEL_NPM_REGISTRY 显式指定 > 连通性探测自动选择 > 默认官方源。
+# 国内网络直连 registry.npmjs.org 经常极慢或超时（OpenClaw 安装是全流程最常
+# 失败的一步），探测成功（≤3s）才用官方源；失败自动回落 npmmirror。
+# 注意不再 `npm config set registry` 写用户全局配置 —— 改为安装命令上挂
+# --registry，只影响本次安装，装完用户 npm 配置一个字节都没动。
+step "2/8" "准备 Node.js 工具链" "选择 npm registry"
+NPM_REGISTRY="${EASEL_NPM_REGISTRY:-}"
+if [ -z "$NPM_REGISTRY" ]; then
+    if npm ping --registry https://registry.npmjs.org >/dev/null 2>&1; then
+        NPM_REGISTRY="https://registry.npmjs.org"
+        ok "npm registry: npmjs.org（连通性正常）"
+    else
+        NPM_REGISTRY="https://registry.npmmirror.com"
+        warn "npmjs.org 连通性差，自动使用国内镜像 npmmirror.com（可用 EASEL_NPM_REGISTRY 覆盖）"
+    fi
+else
+    ok "npm registry: $NPM_REGISTRY（EASEL_NPM_REGISTRY 指定）"
+fi
+NPM_REGISTRY_ARGS=(--registry "$NPM_REGISTRY")
 
 # ---- 3. 检测/安装 OpenClaw（复用用户已有安装，不覆盖全局配置） ----
 step "3/8" "检测 OpenClaw" "已有安装将直接复用"
@@ -207,7 +223,7 @@ if command -v openclaw >/dev/null 2>&1; then
     ok "检测到 OpenClaw：$($OPENCLAW_BIN --version 2>&1 | head -1)"
 else
     info "安装 OpenClaw..."
-    npm install -g openclaw@latest --loglevel warn 2>&1 | tail -1
+    npm install -g openclaw@latest --loglevel warn "${NPM_REGISTRY_ARGS[@]}" 2>&1 | tail -1
     # npm 全局 bin 目录未必在当前 shell 的 PATH 上：macOS Homebrew 的 Node 会把全局包装到
     # $(npm prefix -g)/bin（如 /opt/homebrew/Cellar/node/<ver>/bin），而 /opt/homebrew/bin 里
     # 并没有 openclaw 链接。此时 command -v 拿到空值，后面 $OPENCLAW_BIN --version 会直接崩。
@@ -260,7 +276,22 @@ fi
 # ---- 5. 安装 easel CLI ----
 step "5/8" "安装 Easel 运行依赖" "Web · 媒体 · 浏览器发布"
 info "[1/2] 安装 Python 依赖与 easel CLI..."
-PIP_ARGS=(install -e "$PROJECT_ROOT" --progress-bar on)
+# pip 镜像：EASEL_PIP_INDEX 显式指定 > 官方源连通性探测 > 默认官方源（同 npm 逻辑）。
+# 国内直连 pypi.org 装依赖（fastapi/playwright 等）经常超时；探测失败自动回落清华源。
+PIP_INDEX="${EASEL_PIP_INDEX:-}"
+if [ -z "$PIP_INDEX" ]; then
+    if python3 -c "import urllib.request;urllib.request.urlopen('https://pypi.org/simple/', timeout=4)" >/dev/null 2>&1; then
+        PIP_INDEX_ARGS=()
+        ok "PyPI: pypi.org（连通性正常）"
+    else
+        PIP_INDEX_ARGS=(-i "https://pypi.tuna.tsinghua.edu.cn/simple")
+        warn "pypi.org 连通性差，自动使用清华镜像（可用 EASEL_PIP_INDEX 覆盖）"
+    fi
+else
+    PIP_INDEX_ARGS=(-i "$PIP_INDEX")
+    ok "PyPI: $PIP_INDEX（EASEL_PIP_INDEX 指定）"
+fi
+PIP_ARGS=(install -e "$PROJECT_ROOT" --progress-bar on ${PIP_INDEX_ARGS[@]+"${PIP_INDEX_ARGS[@]}"})
 if [ "$(id -u)" -eq 0 ]; then
     PIP_ARGS+=(--root-user-action=ignore)
     warn "当前以 root 安装；生产服务器建议使用虚拟环境"
@@ -278,7 +309,7 @@ info "构建 Web 前端..."
 if [ -d "$PROJECT_ROOT/web/frontend" ]; then
     if ! (
         cd "$PROJECT_ROOT/web/frontend"
-        if [ -f package-lock.json ]; then npm ci --no-audit --no-fund || npm install --no-audit --no-fund; else npm install --no-audit --no-fund; fi
+        if [ -f package-lock.json ]; then npm ci --no-audit --no-fund "${NPM_REGISTRY_ARGS[@]}" || npm install --no-audit --no-fund "${NPM_REGISTRY_ARGS[@]}"; else npm install --no-audit --no-fund "${NPM_REGISTRY_ARGS[@]}"; fi
         npm run build
     ); then
         echo "前端依赖安装或构建失败；请检查 Node.js/npm 网络后重新运行 bash setup.sh。" >&2
