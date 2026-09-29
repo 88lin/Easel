@@ -262,7 +262,9 @@ export default function SettingsPanel({ onClose }: Props) {
   const SLOT_EDIT: Record<string, { model: boolean; base: boolean }> = {
     openai: { model: true, base: true },
     relay: { model: true, base: true },
-    anthropic: { model: true, base: false },
+    // anthropic 也要能改 Base URL：官方直连之外，中转站/自建网关/兼容代理都靠它
+    // （后端 _SLOT_ENV_KEYS 已含 anthropic，改地址必须重填 Key 那道闸同样生效）。
+    anthropic: { model: true, base: true },
     siliconflow: { model: false, base: true },
     custom: { model: true, base: true },
   };
