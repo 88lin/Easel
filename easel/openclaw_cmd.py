@@ -37,6 +37,21 @@ def openclaw_base_cmd() -> list[str]:
         if resolved.suffix == ".mjs" and resolved.is_file():
             return [node, str(resolved)]
 
+    # 1.5) PATH `openclaw` is a Windows npm .cmd shim: the shim sits next to
+    #      node.exe + node_modules/openclaw/openclaw.mjs (standard npm global
+    #      layout — see the shim body). Running the shim routes the argv through
+    #      cmd.exe, which truncates a multiline `--message` at the first newline
+    #      ("消息只剩第一行/画像前缀" 的根因，实测于 PATH 里 nvm node 在前的机器)。
+    #      这里解析出 shim 同目录的真实 node + .mjs，完全绕开 cmd.exe。
+    if oc:
+        shim = Path(oc).resolve()
+        if shim.suffix.lower() in (".cmd", ".bat"):
+            shim_dir = shim.parent
+            mjs = shim_dir / "node_modules" / "openclaw" / "openclaw.mjs"
+            node_exe = shim_dir / "node.exe"
+            if mjs.is_file() and node_exe.is_file():
+                return [str(node_exe), str(mjs)]
+
     # 2) Hunt for openclaw.mjs under the known npm global layouts.
     if node:
         node_dir = Path(node).resolve().parent
