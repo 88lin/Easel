@@ -1312,8 +1312,26 @@ textarea.field { resize: vertical; min-height: 90px; }
   padding: 1px 8px; cursor: pointer; white-space: nowrap;
 }
 .settings-overlay .adv-btn:hover { color: var(--text); border-color: var(--text); }
+
+
+/* 本机 Agent 区块（设置 → 对话与脚本）：贴在本机装了 CLI agent 的提示与一键接入。
+   grid 对齐上面的 prow，但列数更少（名称/状态/操作/说明）。 */
+.settings-overlay .local-agents { margin: 10px 16px 0; border: 1px solid var(--border); border-radius: 10px; padding: 10px 12px; }
+.settings-overlay .la-head { display: flex; align-items: baseline; gap: 10px; font-size: 12px; font-weight: 600; margin-bottom: 8px; }
+.settings-overlay .la-head .desc { font-weight: 400; color: var(--text-tertiary); }
+.settings-overlay .la-row { display: grid; grid-template-columns: 1.2fr 62px 84px 1.6fr; gap: 10px; align-items: center; padding: 6px 0; }
+.settings-overlay .la-name { display: flex; flex-direction: column; min-width: 0; font-size: 12px; }
+.settings-overlay .la-name small { color: var(--text-tertiary); font-size: 11px; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+.settings-overlay .la-state { font-size: 11px; text-align: center; border-radius: 999px; padding: 1px 6px; border: 1px solid var(--border); }
+.settings-overlay .la-state.ok { color: var(--green); border-color: var(--green); }
+.settings-overlay .la-model { max-width: 180px; font-size: 12px; padding: 2px 6px; border: 1px solid var(--border); border-radius: 6px; background: var(--bg, transparent); color: inherit; }
+.settings-overlay .la-state.todo { color: var(--text); }
+.settings-overlay .la-state.na { color: var(--text-tertiary); }
+.settings-overlay .la-hint { font-size: 11px; color: var(--text-tertiary); min-width: 0; }
+
 /* 模型列：输入框 + 「拉取」按钮（datalist 补全列出端点返回的模型名）。
    用 flex 让按钮贴着输入框，不改变 prow 的九列 grid 结构。 */
 .settings-overlay .model-cell { display: flex; align-items: center; gap: 6px; min-width: 0; }
 .settings-overlay .model-cell input.mock { min-width: 0; flex: 1 1 auto; }
 .settings-overlay .model-cell .adv-btn { flex: 0 0 auto; }
+
