@@ -817,3 +817,19 @@ export function runChannelSelftest(channel: string): Promise<{ channel: string; 
     body: JSON.stringify({ channel }),
   });
 }
+
+export interface ModelsFetchResponse { baseUrl: string; models: string[]; fetchedAt: number }
+
+/**
+ * 拉取某供应商的模型列表（自定义供应商免手打模型名）。
+ * key 留空时后端按 slot 从已存配置里取（用户不用为了拉列表重贴一遍 Key）。
+ */
+export function fetchAvailableModels(
+  baseUrl: string, key: string, protocol: string, slot = '',
+): Promise<ModelsFetchResponse> {
+  return request('/api/settings/models/available', {
+    method: 'POST',
+    headers: { 'Content-Type': 'application/json' },
+    body: JSON.stringify({ baseUrl, key, protocol, slot }),
+  });
+}

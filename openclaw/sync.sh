@@ -89,7 +89,18 @@ echo "Workspace:"
 for f in "$OPENCLAW_WORKSPACE_SRC"/*.md; do
     [ -f "$f" ] || continue
     name=$(basename "$f")
-    cp "$f" "$OPENCLAW_WORKSPACE_DST/$name"
+    dst="$OPENCLAW_WORKSPACE_DST/$name"
+    # OpenClaw onboard 生成的 bootstrap 文件是硬链接（nlink>=2），直接 cp 会写穿同一个
+    # inode，链接数不降反被 OpenClaw 以 "path must not be hardlinked" 拒绝加载
+    # （issue #26 P1-5）。先删再拷，把链接数重新做成 1。
+    rm -f "$dst"
+    cp "$f" "$dst"
+    # 写穿检查：仍有链接说明目标没被真正替换，明着失败而不是留下一个起不来的 gateway。
+    links=$(stat -c %h "$dst" 2>/dev/null || stat -f %l "$dst" 2>/dev/null || echo 1)
+    if [ "$links" != "1" ]; then
+        echo "  ✗ $name 仍是硬链接（nlink=$links）；请手动删除 $dst 后重跑 bash openclaw/sync.sh" >&2
+        exit 1
+    fi
     echo "  ✓ $name"
 done
 
