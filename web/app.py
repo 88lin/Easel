@@ -1716,6 +1716,99 @@ class SelftestRequest(BaseModel):
     channel: str = "chat"
 
 
+class ModelsFetchRequest(BaseModel):
+    """「拉取模型列表」请求。
+
+    key 优先用前端传来的草稿值（供应商还没落盘时也能拉）；留空则按 slot 从已存配置里取
+    —— 用户已经存过 Key，不该为了拉一次列表再贴一遍明文。服务端全程不落盘、不写日志。
+
+    baseUrl 允许留空由 slot 回落，否则「只用已存配置拉列表」这条路径就进不来。
+    """
+    baseUrl: str = ""
+    key: str = ""
+    protocol: str = "openai"  # openai | anthropic
+    slot: str = ""
+    name: str = ""  # 自定义供应商的 provider 名（slot='custom' 时用它查已存凭据）
+
+
+# slot → (base 键, key 键)；与 _SLOT_ENV_KEYS 同源，外加自定义供应商。
+_FETCH_KEY_BY_SLOT = {
+    'openai': ('OPENAI_BASE_URL', 'OPENAI_API_KEY'),
+    'relay': ('EASEL_LLM_BASE_URL', 'EASEL_LLM_API_KEY'),
+    'anthropic': ('ANTHROPIC_BASE_URL', 'ANTHROPIC_API_KEY'),
+    'siliconflow': ('SILICONFLOW_BASE_URL', 'SILICONFLOW_API_KEY'),
+}
+
+
+@app.post("/api/settings/models/available")
+async def api_models_available(req: ModelsFetchRequest):
+    """代前端拉一次 GET {base}/models，返回模型 id 列表（自定义供应商不用再手打模型名）。
+
+    与 selftest 同一条安全线：带着用户 Key 出去的请求，目标必须过 _valid_base_url +
+    _ssrf_safe；不落盘、不写日志。
+    """
+    base = (req.baseUrl or "").strip().rstrip("/")
+    key = (req.key or "").strip()
+    slot = (req.slot or "").strip()
+    # 草稿没填 key 时，回落到该槽位已存的值（只在内存里用，不回显、不记日志）。
+    if not key and slot:
+        _env = _read_env()
+        if slot == 'custom':
+            # 自定义供应商的凭据在 openclaw.json 里（provider 名 = 用户填的名字）
+            _b, _k = _openclaw_provider_creds().get((req.name or '').strip().lower(), ("", ""))
+        else:
+            _bk, _kk = _FETCH_KEY_BY_SLOT.get(slot, ("", ""))
+            _b, _k = _env.get(_bk, ""), _env.get(_kk, "")
+        key = (_k or "").strip()
+        if not base and _b:
+            base = _b.strip().rstrip("/")
+    if not base:
+        raise HTTPException(400, "Base URL 不能为空")
+    if not _valid_base_url(base):
+        raise HTTPException(400, "Base URL 不合法")
+    if not _ssrf_safe(base):
+        raise HTTPException(400, "目标指向本机/内网地址，已拒绝（避免把 API Key 发给内网服务）")
+
+    anthropic = (req.protocol or "").strip().lower() == "anthropic"
+    if anthropic:
+        url = base + "/v1/models"
+        headers = {"x-api-key": key, "anthropic-version": "2023-06-01",
+                   "Authorization": f"Bearer {key}"}
+    else:
+        url = base + "/models"
+        headers = {"Authorization": f"Bearer {key}"}
+
+    class _NoRedirect(urllib.request.HTTPRedirectHandler):
+        def redirect_request(self, *_a, **_kw):
+            return None
+
+    _opener = urllib.request.build_opener(_NoRedirect)
+
+    def _fetch() -> list[str]:
+        rq = urllib.request.Request(url, headers=headers)
+        with _opener.open(rq, timeout=15) as resp:
+            payload = json.loads(resp.read().decode("utf-8", "replace"))
+        # OpenAI / Anthropic 形状都是 {"data":[{"id":...}]}；有的网关直接给 ["id",...]。
+        if isinstance(payload, dict):
+            items = payload.get("data") or payload.get("models") or []
+        elif isinstance(payload, list):
+            items = payload
+        else:
+            items = []
+        ids = []
+        for it in items:
+            mid = it.get("id") if isinstance(it, dict) else it
+            if isinstance(mid, str) and mid.strip():
+                ids.append(mid.strip())
+        return sorted(set(ids))
+
+    try:
+        models = await asyncio.to_thread(_fetch)
+    except Exception as e:  # noqa: BLE001
+        raise HTTPException(502, f"拉取失败：{type(e).__name__}: {e}"[:180]) from e
+    return {"baseUrl": base, "models": models, "fetchedAt": int(time.time())}
+
+
 @app.post("/api/settings/models/selftest")
 async def api_models_selftest(req: SelftestRequest):
     """真自测：对已配置的 OpenAI 兼容通道发 GET {base}/models 并计耗时。"""

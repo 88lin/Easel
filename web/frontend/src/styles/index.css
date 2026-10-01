@@ -1312,3 +1312,8 @@ textarea.field { resize: vertical; min-height: 90px; }
   padding: 1px 8px; cursor: pointer; white-space: nowrap;
 }
 .settings-overlay .adv-btn:hover { color: var(--text); border-color: var(--text); }
+/* 模型列：输入框 + 「拉取」按钮（datalist 补全列出端点返回的模型名）。
+   用 flex 让按钮贴着输入框，不改变 prow 的九列 grid 结构。 */
+.settings-overlay .model-cell { display: flex; align-items: center; gap: 6px; min-width: 0; }
+.settings-overlay .model-cell input.mock { min-width: 0; flex: 1 1 auto; }
+.settings-overlay .model-cell .adv-btn { flex: 0 0 auto; }

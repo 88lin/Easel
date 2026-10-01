@@ -5,6 +5,7 @@ import type { JobView } from './EnvBoard';
 import {
   fetchEnvTools, startEnvInstall, fetchEnvJob,
   fetchModelChannels, runChannelSelftest, saveModelConfig,
+  fetchAvailableModels,
 } from '../lib/api';
 import type { EnvTool, ModelRow, SelftestResult } from '../lib/api';
 import { IconSlidersHorizontal, IconPackage, IconEllipsis } from './settingsIcons';
@@ -151,6 +152,18 @@ export default function SettingsPanel({ onClose }: Props) {
   const [selftest, setSelftest] = useState<{ testedAt: number; byBase: Record<string, SelftestResult> } | null>(null);
   const [testing, setTesting] = useState(false);
   const [selftestNote, setSelftestNote] = useState('');
+  // 拉取模型列表：{ 行号 → { loading, models, err } }
+  const [modelLists, setModelLists] = useState<Record<number, { loading: boolean; models: string[]; err: string }>>({});
+
+  const pullModels = useCallback(async (i: number, r: ModelRow) => {
+    setModelLists((m) => ({ ...m, [i]: { loading: true, models: m[i]?.models || [], err: '' } }));
+    try {
+      const d = await fetchAvailableModels(r.baseUrl || '', r.keyNew || '', r.type === 'anthropic' ? 'anthropic' : 'openai', r.slot || '');
+      setModelLists((m) => ({ ...m, [i]: { loading: false, models: d.models, err: d.models.length ? '' : '该端点没有返回模型' } }));
+    } catch (e) {
+      setModelLists((m) => ({ ...m, [i]: { loading: false, models: m[i]?.models || [], err: e instanceof Error ? e.message : '拉取失败' } }));
+    }
+  }, []);
 
   useEffect(() => {
     let alive = true;
@@ -343,7 +356,29 @@ export default function SettingsPanel({ onClose }: Props) {
               )}
               <span>{r.type}</span>
               {ed && ed.model && (!ops?.media || r.adv) ? (
-                <input className="mock" value={r.model} placeholder={isCustom ? '模型名' : ''} onChange={(e) => ops?.onRow?.(i, { model: e.target.value })} />
+                <span className="model-cell">
+                  <input
+                    className="mock"
+                    value={r.model}
+                    placeholder={isCustom ? '模型名' : ''}
+                    list={`ml-${i}`}
+                    onChange={(e) => ops?.onRow?.(i, { model: e.target.value })}
+                  />
+                  {(modelLists[i]?.models?.length || 0) > 0 && (
+                    <datalist id={`ml-${i}`}>
+                      {modelLists[i].models.map((mid) => <option key={mid} value={mid} />)}
+                    </datalist>
+                  )}
+                  <button
+                    className="adv-btn"
+                    title="从该端点拉取可用模型列表，点击输入框即可选择"
+                    onClick={() => void pullModels(i, r)}
+                    disabled={modelLists[i]?.loading}
+                  >{modelLists[i]?.loading ? '拉取中…' : '拉取'}</button>
+                  {modelLists[i]?.err && (
+                    <span className="hint" title={modelLists[i].err}>⚠</span>
+                  )}
+                </span>
               ) : (
                 <span className={`cell-text${ops?.media && !r.model ? ' dim' : ''}`} title={r.model || '内建默认'}>
                   {r.model || (ops?.media ? '默认（内建）' : '')}
