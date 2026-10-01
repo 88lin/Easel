@@ -88,7 +88,9 @@ CHAT_TRANSPORT = os.environ.get("EASEL_CHAT_TRANSPORT", "http").strip().lower()
 # <state 目录>/workspace（issue #19）。要用 workspace 路径请走 easel.openclaw_workspace.workspace_dir()，
 # 它直接问 openclaw 要运行时真值，不猜版本。
 # OpenClaw 会话历史（transcript）目录：<profile 配置目录>/agents/main/sessions/<session-id>.jsonl
-OPENCLAW_SESSIONS_DIR = Path.home() / f".openclaw-{OPENCLAW_PROFILE}" / "agents" / "main" / "sessions"
+# 配置/状态目录统一走 easel.openclaw_workspace：支持 EASEL_OPENCLAW_STATE_DIR 覆盖（#62）。
+from easel.openclaw_workspace import config_path as _oc_config_path, state_dir as _oc_state_dir
+OPENCLAW_SESSIONS_DIR = _oc_state_dir() / "agents" / "main" / "sessions"
 
 # 思考档位（每轮 --thinking）。前后端已完整支持展示思考：后端把 thinking_delta 转成 SSE
 # `thinking` 事件，前端 MessageBubble 渲染「💭 思考过程」并在流式结束后持久保留。面板里有没有
@@ -1287,7 +1289,7 @@ def _model_channels() -> dict:
     env = _read_env()
     primary = ""
     try:
-        oc = Path.home() / ".openclaw-easel" / "openclaw.json"
+        oc = _oc_config_path()
         if oc.is_file():
             primary = str(json.loads(oc.read_text(encoding="utf-8"))
                           .get("agents", {}).get("defaults", {}).get("model", {}).get("primary", ""))
@@ -1328,7 +1330,7 @@ def _model_channels() -> dict:
 
     custom_rows = []
     try:
-        oc = Path.home() / ".openclaw-easel" / "openclaw.json"
+        oc = _oc_config_path()
         if oc.is_file():
             provs = (json.loads(oc.read_text(encoding="utf-8"))
                      .get("models", {}).get("providers", {})) or {}
@@ -1447,7 +1449,7 @@ RESERVED_PROVIDER_KEYS = {"openai", "anthropic", "relay"}
 def _openclaw_provider_creds() -> dict[str, tuple[str, str]]:
     """读 openclaw.json 里每个 chat 供应商现存的 (baseUrl, apiKey)。读不到就当空表（不阻断保存）。"""
     try:
-        oc = Path.home() / '.openclaw-easel' / 'openclaw.json'
+        oc = _oc_config_path()
         provs = json.loads(oc.read_text(encoding='utf-8')).get('models', {}).get('providers', {})
         return {k: (str(v.get('baseUrl') or ''), str(v.get('apiKey') or ''))
                 for k, v in provs.items() if isinstance(v, dict)}
@@ -1462,7 +1464,7 @@ def _sync_openclaw_chat(provider_updates: dict[str, dict], keep_custom: set[str]
     只有确有差异才落盘（改前备份 .bak-web）。
     """
     try:
-        oc = Path.home() / '.openclaw-easel' / 'openclaw.json'
+        oc = _oc_config_path()
         if not oc.is_file():
             return ''
         data = json.loads(oc.read_text(encoding='utf-8'))
@@ -4069,7 +4071,7 @@ def _write_baseline_profile(name: str, form: dict) -> None:
 @app.delete("/api/session/{session_key}")
 async def api_delete_session(session_key: str):
     """删除 OpenClaw 本地的 session 记录。"""
-    sessions_file = Path.home() / '.openclaw-easel' / 'agents' / 'main' / 'sessions' / 'sessions.json'
+    sessions_file = _oc_state_dir() / 'agents' / 'main' / 'sessions' / 'sessions.json'
     if not sessions_file.is_file():
         return {'deleted': False, 'reason': 'sessions file not found'}
     data = json.loads(sessions_file.read_text(encoding="utf-8"))
