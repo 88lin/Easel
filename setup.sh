@@ -196,8 +196,14 @@ fi
 
 # ---- 2. npm 源 ----
 step "2/8" "准备 Node.js 工具链" "设置 npm registry"
-npm config set registry https://registry.npmjs.org 2>/dev/null
-ok "npm registry: npmjs.org"
+# 这行在 set -e 下曾把整个安装静默杀掉（如 macOS 上 ~/.npmrc 带 provenance xattr，
+# 跨会话写入被拒 → npm 非零退出 → 脚本无提示退出，issue #26 P0-1）。它只是个默认值
+# 设置，失败不该中断安装，也不该覆盖用户自己的镜像源配置。
+if npm config set registry https://registry.npmjs.org 2>/dev/null; then
+    ok "npm registry: npmjs.org"
+else
+    warn "npm registry 设置失败（保留用户现有配置，不影响安装）；可手动执行：npm config set registry https://registry.npmjs.org"
+fi
 
 # ---- 3. 检测/安装 OpenClaw（复用用户已有安装，不覆盖全局配置） ----
 step "3/8" "检测 OpenClaw" "已有安装将直接复用"
@@ -477,11 +483,17 @@ fi
 if usable_key "${OPENAI_API_KEY:-}" && ! usable_key "${ANTHROPIC_API_KEY:-}" \
    && ! { usable_key "${EASEL_LLM_API_KEY:-}" && [ -n "${EASEL_LLM_BASE_URL:-}" ]; }; then
     OPENAI_MODEL="${OPENAI_MODEL:-gpt-4o}"
+    # 未声明 maxTokens 时 OpenClaw 会自行推导，部分 OpenAI 兼容网关据此拒绝请求
+    # （issue #26 P0-2）。默认值对齐默认模型 gpt-4o 的真实上限（128K 上下文 /
+    # 16384 最大输出，OpenAI 官方文档），不是随手照抄 Gemini 分支的 65535 ——
+    # 声称上限高于真实值，长输出请求照样会被下游网关拒；两个方向都可被 .env 覆盖。
+    OPENAI_CONTEXT_WINDOW="${OPENAI_CONTEXT_WINDOW:-128000}"
+    OPENAI_MAX_TOKENS="${OPENAI_MAX_TOKENS:-16384}"
     $OC config set models.providers.openai.api "openai-completions" 2>&1 | sed '/^No change$/d'
     $OC config set models.providers.openai.apiKey "$OPENAI_API_KEY" 2>&1 | sed '/^No change$/d'
     $OC config set models.providers.openai.baseUrl "${OPENAI_BASE_URL:-https://api.openai.com/v1}" 2>&1 | sed '/^No change$/d'
     $OC config set models.providers.openai.models \
-        "[{\"id\":\"$OPENAI_MODEL\",\"name\":\"OpenAI model\",\"reasoning\":true,\"input\":[\"text\",\"image\"]}]" \
+        "[{\"id\":\"$OPENAI_MODEL\",\"name\":\"OpenAI model\",\"reasoning\":true,\"input\":[\"text\",\"image\"],\"contextWindow\":$OPENAI_CONTEXT_WINDOW,\"maxTokens\":$OPENAI_MAX_TOKENS}]" \
         --strict-json 2>&1 | sed '/^No change$/d'
     DEFAULT_PRIMARY_MODEL="openai/$OPENAI_MODEL"
     CLAUDE_MODEL="$DEFAULT_PRIMARY_MODEL"

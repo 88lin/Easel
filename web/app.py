@@ -1508,6 +1508,41 @@ def _sync_openclaw_chat(provider_updates: dict[str, dict], keep_custom: set[str]
         return f'openclaw 同步失败：{e}'
 
 
+def _sync_anthropic_provider(base: str, key: str) -> str:
+    """把 Web 面板保存的 Anthropic 通道同步成 openclaw.json 里的 anthropic provider。
+
+    bash setup.sh 用 oc_write_anthropic 写过同一块配置，但 Web 面板此前只更新 .env ——
+    openclaw.json 里没有 anthropic provider，对话永远走不到新配的 Claude（问题：保存后
+    界面显示「已配置」，实际不生效，且没有任何报错）。这里复刻 setup.sh 的写入：
+    api=anthropic-messages、models 留空（agent 侧走 anthropic 扩展的内置 Claude 目录），
+    原子写 + .bak-web 备份，风格与 _sync_openclaw_chat 一致。返回给用户的提示语。
+    """
+    try:
+        oc = Path.home() / '.openclaw-easel' / 'openclaw.json'
+        if not oc.is_file():
+            return ''
+        data = json.loads(oc.read_text(encoding='utf-8'))
+        providers = data.setdefault('models', {}).setdefault('providers', {})
+        prov = providers.get('anthropic')
+        target_base = base or 'https://api.anthropic.com'
+        if isinstance(prov, dict) and prov.get('baseUrl') == target_base \
+                and (not key or prov.get('apiKey') == key):
+            return ''
+        new_prov = dict(prov) if isinstance(prov, dict) else {'models': []}
+        new_prov['baseUrl'] = target_base
+        if key:
+            new_prov['apiKey'] = key
+        new_prov.setdefault('models', [])
+        providers['anthropic'] = new_prov
+        shutil.copy2(oc, oc.parent / (oc.name + '.bak-web'))
+        tmp = oc.parent / (oc.name + '.tmp')
+        tmp.write_text(json.dumps(data, ensure_ascii=False, indent=2), encoding='utf-8')
+        tmp.replace(oc)
+        return 'anthropic provider 已同步到 openclaw（下一条消息生效）'
+    except Exception as e:  # noqa: BLE001
+        return f'anthropic provider 同步失败：{e}'
+
+
 class ModelSaveRow(BaseModel):
     slot: str = ""
     name: str = ""
@@ -1627,6 +1662,8 @@ async def api_settings_models_save(req: ModelSaveRequest):
                 updates['CLAUDE_MODEL'] = model
             if key:
                 updates['ANTHROPIC_API_KEY'] = key
+            if base:
+                updates['ANTHROPIC_BASE_URL'] = base
             if is_chat:
                 pkey = 'anthropic'
         elif slot == 'siliconflow':
@@ -1663,6 +1700,13 @@ async def api_settings_models_save(req: ModelSaveRequest):
     note = ''
     if is_chat:
         note = _sync_openclaw_chat(provider_updates, keep_custom, primary_ref)
+        # anthropic 槽位不在 provider_updates 里（它不是自定义供应商），但同样要
+        # 落到 openclaw.json 才真正生效 —— setup.sh 写的 provider 可能已过时。
+        if any((r.slot or '').strip() == 'anthropic' for r in req.rows):
+            _an = _sync_anthropic_provider(updates.get('ANTHROPIC_BASE_URL', ''),
+                                          updates.get('ANTHROPIC_API_KEY', ''))
+            if _an:
+                note = f'{note}；{_an}' if note else _an
     resp = {"ok": True, "note": note}
     resp.update(_model_channels())
     return resp
@@ -1792,21 +1836,118 @@ class SelftestRequest(BaseModel):
     channel: str = "chat"
 
 
+class ModelsFetchRequest(BaseModel):
+    """「拉取模型列表」请求。
+
+    key 优先用前端传来的草稿值（供应商还没落盘时也能拉）；留空则按 slot 从已存配置里取
+    —— 用户已经存过 Key，不该为了拉一次列表再贴一遍明文。服务端全程不落盘、不写日志。
+
+    baseUrl 允许留空由 slot 回落，否则「只用已存配置拉列表」这条路径就进不来。
+    """
+    baseUrl: str = ""
+    key: str = ""
+    protocol: str = "openai"  # openai | anthropic
+    slot: str = ""
+    name: str = ""  # 自定义供应商的 provider 名（slot='custom' 时用它查已存凭据）
+
+
+# slot → (base 键, key 键)；与 _SLOT_ENV_KEYS 同源，外加自定义供应商。
+_FETCH_KEY_BY_SLOT = {
+    'openai': ('OPENAI_BASE_URL', 'OPENAI_API_KEY'),
+    'relay': ('EASEL_LLM_BASE_URL', 'EASEL_LLM_API_KEY'),
+    'anthropic': ('ANTHROPIC_BASE_URL', 'ANTHROPIC_API_KEY'),
+    'siliconflow': ('SILICONFLOW_BASE_URL', 'SILICONFLOW_API_KEY'),
+}
+
+
+@app.post("/api/settings/models/available")
+async def api_models_available(req: ModelsFetchRequest):
+    """代前端拉一次 GET {base}/models，返回模型 id 列表（自定义供应商不用再手打模型名）。
+
+    与 selftest 同一条安全线：带着用户 Key 出去的请求，目标必须过 _valid_base_url +
+    _ssrf_safe；不落盘、不写日志。
+    """
+    base = (req.baseUrl or "").strip().rstrip("/")
+    key = (req.key or "").strip()
+    slot = (req.slot or "").strip()
+    # 草稿没填 key 时，回落到该槽位已存的值（只在内存里用，不回显、不记日志）。
+    if not key and slot:
+        _env = _read_env()
+        if slot == 'custom':
+            # 自定义供应商的凭据在 openclaw.json 里（provider 名 = 用户填的名字）
+            _b, _k = _openclaw_provider_creds().get((req.name or '').strip().lower(), ("", ""))
+        else:
+            _bk, _kk = _FETCH_KEY_BY_SLOT.get(slot, ("", ""))
+            _b, _k = _env.get(_bk, ""), _env.get(_kk, "")
+        key = (_k or "").strip()
+        if not base and _b:
+            base = _b.strip().rstrip("/")
+    if not base:
+        raise HTTPException(400, "Base URL 不能为空")
+    if not _valid_base_url(base):
+        raise HTTPException(400, "Base URL 不合法")
+    if not _ssrf_safe(base):
+        raise HTTPException(400, "目标指向本机/内网地址，已拒绝（避免把 API Key 发给内网服务）")
+
+    anthropic = (req.protocol or "").strip().lower() == "anthropic"
+    if anthropic:
+        url = base + "/v1/models"
+        headers = {"x-api-key": key, "anthropic-version": "2023-06-01",
+                   "Authorization": f"Bearer {key}"}
+    else:
+        url = base + "/models"
+        headers = {"Authorization": f"Bearer {key}"}
+
+    class _NoRedirect(urllib.request.HTTPRedirectHandler):
+        def redirect_request(self, *_a, **_kw):
+            return None
+
+    _opener = urllib.request.build_opener(_NoRedirect)
+
+    def _fetch() -> list[str]:
+        rq = urllib.request.Request(url, headers=headers)
+        with _opener.open(rq, timeout=15) as resp:
+            payload = json.loads(resp.read().decode("utf-8", "replace"))
+        # OpenAI / Anthropic 形状都是 {"data":[{"id":...}]}；有的网关直接给 ["id",...]。
+        if isinstance(payload, dict):
+            items = payload.get("data") or payload.get("models") or []
+        elif isinstance(payload, list):
+            items = payload
+        else:
+            items = []
+        ids = []
+        for it in items:
+            mid = it.get("id") if isinstance(it, dict) else it
+            if isinstance(mid, str) and mid.strip():
+                ids.append(mid.strip())
+        return sorted(set(ids))
+
+    try:
+        models = await asyncio.to_thread(_fetch)
+    except Exception as e:  # noqa: BLE001
+        raise HTTPException(502, f"拉取失败：{type(e).__name__}: {e}"[:180]) from e
+    return {"baseUrl": base, "models": models, "fetchedAt": int(time.time())}
+
+
 @app.post("/api/settings/models/selftest")
 async def api_models_selftest(req: SelftestRequest):
     """真自测：对已配置的 OpenAI 兼容通道发 GET {base}/models 并计耗时。"""
     channel = (req.channel or "all").strip()
     env = _read_env()
-    targets: list[tuple[str, str]] = []
+    # (base, key, 是否为 Anthropic Messages 协议)。协议决定探测用的鉴权头与路径：
+    # Anthropic 是 x-api-key + /v1/models，OpenAI 兼容是 Bearer + /models。
+    targets: list[tuple[str, str, bool]] = []
     if channel in ("chat", "all"):
-        for base, key in ((env.get("ANTHROPIC_BASE_URL", ""), env.get("ANTHROPIC_API_KEY", "")),
-                          (env.get("OPENAI_BASE_URL", ""), env.get("OPENAI_API_KEY", "")),
-                          (env.get("EASEL_LLM_BASE_URL", ""), env.get("EASEL_LLM_API_KEY", ""))):
+        for base, key, is_anthropic in (
+            (env.get("ANTHROPIC_BASE_URL", ""), env.get("ANTHROPIC_API_KEY", ""), True),
+            (env.get("OPENAI_BASE_URL", ""), env.get("OPENAI_API_KEY", ""), False),
+            (env.get("EASEL_LLM_BASE_URL", ""), env.get("EASEL_LLM_API_KEY", ""), False),
+        ):
             if base.strip() and key.strip():
-                targets.append((base.strip().rstrip("/"), key.strip()))
+                targets.append((base.strip().rstrip("/"), key.strip(), is_anthropic))
     if channel in ("transcribe", "all") and (env.get("SILICONFLOW_API_KEY") or "").strip():
         targets.append(((env.get("SILICONFLOW_BASE_URL") or "https://api.siliconflow.cn/v1").strip().rstrip("/"),
-                        env["SILICONFLOW_API_KEY"].strip()))
+                        env["SILICONFLOW_API_KEY"].strip(), False))
 
     # 这里会把真实 API Key 当 Bearer 发出去，所以目标地址必须先过闸：
     # 合法 http(s)、且不指向本机/内网/云元数据；跳转也不跟（跟了等于绕过前面的判断）。
@@ -1816,7 +1957,7 @@ async def api_models_selftest(req: SelftestRequest):
 
     _opener = urllib.request.build_opener(_NoRedirect)
 
-    def _probe(base: str, key: str) -> dict:
+    def _probe(base: str, key: str, *, anthropic: bool = False) -> dict:
         t0 = time.time()
         if not _valid_base_url(base):
             return {"baseUrl": base, "ok": False, "ms": 0, "detail": "Base URL 不合法，未发起请求"}
@@ -1824,14 +1965,32 @@ async def api_models_selftest(req: SelftestRequest):
             return {"baseUrl": base, "ok": False, "ms": 0,
                     "detail": "目标指向本机/内网地址，已拒绝（避免把 API Key 发给内网服务）"}
         try:
-            rq = urllib.request.Request(base + "/models", headers={"Authorization": f"Bearer {key}"})
+            if anthropic:
+                # Anthropic Messages 协议的鉴权头是 x-api-key（不是 Authorization: Bearer），
+                # 且模型列表在 /v1/models。按 OpenAI 兼容方式探测只会得到 401/404，
+                # 让用户误以为 Key 无效。同时带上两种头：兼容把 /v1/models 反代成
+                # OpenAI 风格的中转站（它们只认 Bearer）。
+                url = base + "/v1/models"
+                rq = urllib.request.Request(url, headers={
+                    "x-api-key": key,
+                    "anthropic-version": "2023-06-01",
+                    "Authorization": f"Bearer {key}",
+                })
+            else:
+                rq = urllib.request.Request(base + "/models", headers={"Authorization": f"Bearer {key}"})
             with _opener.open(rq, timeout=15) as resp:
                 return {"baseUrl": base, "ok": resp.status == 200, "ms": int((time.time() - t0) * 1000)}
         except Exception as e:  # noqa: BLE001
             return {"baseUrl": base, "ok": False, "ms": int((time.time() - t0) * 1000),
                     "detail": f"{type(e).__name__}: {e}"[:140]}
 
-    results = await asyncio.to_thread(lambda: [_probe(b, k) for b, k in targets])
+    def _run_probes() -> list[dict]:
+        out: list[dict] = []
+        for base, key, is_anthropic in targets:
+            out.append(_probe(base, key, anthropic=is_anthropic))
+        return out
+
+    results = await asyncio.to_thread(_run_probes)
     return {"channel": channel, "results": results, "testedAt": int(time.time())}
 
 

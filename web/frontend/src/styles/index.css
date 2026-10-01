@@ -1313,6 +1313,7 @@ textarea.field { resize: vertical; min-height: 90px; }
 }
 .settings-overlay .adv-btn:hover { color: var(--text); border-color: var(--text); }
 
+
 /* 本机 Agent 区块（设置 → 对话与脚本）：贴在本机装了 CLI agent 的提示与一键接入。
    grid 对齐上面的 prow，但列数更少（名称/状态/操作/说明）。 */
 .settings-overlay .local-agents { margin: 10px 16px 0; border: 1px solid var(--border); border-radius: 10px; padding: 10px 12px; }
@@ -1327,3 +1328,10 @@ textarea.field { resize: vertical; min-height: 90px; }
 .settings-overlay .la-state.todo { color: var(--text); }
 .settings-overlay .la-state.na { color: var(--text-tertiary); }
 .settings-overlay .la-hint { font-size: 11px; color: var(--text-tertiary); min-width: 0; }
+
+/* 模型列：输入框 + 「拉取」按钮（datalist 补全列出端点返回的模型名）。
+   用 flex 让按钮贴着输入框，不改变 prow 的九列 grid 结构。 */
+.settings-overlay .model-cell { display: flex; align-items: center; gap: 6px; min-width: 0; }
+.settings-overlay .model-cell input.mock { min-width: 0; flex: 1 1 auto; }
+.settings-overlay .model-cell .adv-btn { flex: 0 0 auto; }
+
