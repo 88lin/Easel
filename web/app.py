@@ -1520,7 +1520,7 @@ def _sync_anthropic_provider(base: str, key: str) -> str:
     原子写 + .bak-web 备份，风格与 _sync_openclaw_chat 一致。返回给用户的提示语。
     """
     try:
-        oc = Path.home() / '.openclaw-easel' / 'openclaw.json'
+        oc = _oc_config_path()
         if not oc.is_file():
             return ''
         data = json.loads(oc.read_text(encoding='utf-8'))
@@ -1789,7 +1789,7 @@ async def api_local_agent_enable(req: LocalAgentEnableRequest):
 def _set_openclaw_primary(primary_ref: str) -> str:
     """把 agents.defaults.model.primary 指到给定 provider/model（原子写 + 备份）。"""
     try:
-        oc = Path.home() / '.openclaw-easel' / 'openclaw.json'
+        oc = _oc_config_path()
         if not oc.is_file():
             return 'openclaw.json 不存在，请先运行 bash setup.sh'
         data = json.loads(oc.read_text(encoding='utf-8'))
@@ -1813,7 +1813,7 @@ def _declare_anthropic_provider(base: str) -> str:
     后端复用本机 Claude Code 的登录。原子写 + .bak-web 备份。
     """
     try:
-        oc = Path.home() / '.openclaw-easel' / 'openclaw.json'
+        oc = _oc_config_path()
         if not oc.is_file():
             return 'openclaw.json 不存在，请先运行 bash setup.sh'
         data = json.loads(oc.read_text(encoding='utf-8'))
