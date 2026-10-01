@@ -1508,6 +1508,41 @@ def _sync_openclaw_chat(provider_updates: dict[str, dict], keep_custom: set[str]
         return f'openclaw 同步失败：{e}'
 
 
+def _sync_anthropic_provider(base: str, key: str) -> str:
+    """把 Web 面板保存的 Anthropic 通道同步成 openclaw.json 里的 anthropic provider。
+
+    bash setup.sh 用 oc_write_anthropic 写过同一块配置，但 Web 面板此前只更新 .env ——
+    openclaw.json 里没有 anthropic provider，对话永远走不到新配的 Claude（问题：保存后
+    界面显示「已配置」，实际不生效，且没有任何报错）。这里复刻 setup.sh 的写入：
+    api=anthropic-messages、models 留空（agent 侧走 anthropic 扩展的内置 Claude 目录），
+    原子写 + .bak-web 备份，风格与 _sync_openclaw_chat 一致。返回给用户的提示语。
+    """
+    try:
+        oc = Path.home() / '.openclaw-easel' / 'openclaw.json'
+        if not oc.is_file():
+            return ''
+        data = json.loads(oc.read_text(encoding='utf-8'))
+        providers = data.setdefault('models', {}).setdefault('providers', {})
+        prov = providers.get('anthropic')
+        target_base = base or 'https://api.anthropic.com'
+        if isinstance(prov, dict) and prov.get('baseUrl') == target_base \
+                and (not key or prov.get('apiKey') == key):
+            return ''
+        new_prov = dict(prov) if isinstance(prov, dict) else {'models': []}
+        new_prov['baseUrl'] = target_base
+        if key:
+            new_prov['apiKey'] = key
+        new_prov.setdefault('models', [])
+        providers['anthropic'] = new_prov
+        shutil.copy2(oc, oc.parent / (oc.name + '.bak-web'))
+        tmp = oc.parent / (oc.name + '.tmp')
+        tmp.write_text(json.dumps(data, ensure_ascii=False, indent=2), encoding='utf-8')
+        tmp.replace(oc)
+        return 'anthropic provider 已同步到 openclaw（下一条消息生效）'
+    except Exception as e:  # noqa: BLE001
+        return f'anthropic provider 同步失败：{e}'
+
+
 class ModelSaveRow(BaseModel):
     slot: str = ""
     name: str = ""
@@ -1627,6 +1662,8 @@ async def api_settings_models_save(req: ModelSaveRequest):
                 updates['CLAUDE_MODEL'] = model
             if key:
                 updates['ANTHROPIC_API_KEY'] = key
+            if base:
+                updates['ANTHROPIC_BASE_URL'] = base
             if is_chat:
                 pkey = 'anthropic'
         elif slot == 'siliconflow':
@@ -1663,6 +1700,13 @@ async def api_settings_models_save(req: ModelSaveRequest):
     note = ''
     if is_chat:
         note = _sync_openclaw_chat(provider_updates, keep_custom, primary_ref)
+        # anthropic 槽位不在 provider_updates 里（它不是自定义供应商），但同样要
+        # 落到 openclaw.json 才真正生效 —— setup.sh 写的 provider 可能已过时。
+        if any((r.slot or '').strip() == 'anthropic' for r in req.rows):
+            _an = _sync_anthropic_provider(updates.get('ANTHROPIC_BASE_URL', ''),
+                                          updates.get('ANTHROPIC_API_KEY', ''))
+            if _an:
+                note = f'{note}；{_an}' if note else _an
     resp = {"ok": True, "note": note}
     resp.update(_model_channels())
     return resp
@@ -1677,16 +1721,20 @@ async def api_models_selftest(req: SelftestRequest):
     """真自测：对已配置的 OpenAI 兼容通道发 GET {base}/models 并计耗时。"""
     channel = (req.channel or "all").strip()
     env = _read_env()
-    targets: list[tuple[str, str]] = []
+    # (base, key, 是否为 Anthropic Messages 协议)。协议决定探测用的鉴权头与路径：
+    # Anthropic 是 x-api-key + /v1/models，OpenAI 兼容是 Bearer + /models。
+    targets: list[tuple[str, str, bool]] = []
     if channel in ("chat", "all"):
-        for base, key in ((env.get("ANTHROPIC_BASE_URL", ""), env.get("ANTHROPIC_API_KEY", "")),
-                          (env.get("OPENAI_BASE_URL", ""), env.get("OPENAI_API_KEY", "")),
-                          (env.get("EASEL_LLM_BASE_URL", ""), env.get("EASEL_LLM_API_KEY", ""))):
+        for base, key, is_anthropic in (
+            (env.get("ANTHROPIC_BASE_URL", ""), env.get("ANTHROPIC_API_KEY", ""), True),
+            (env.get("OPENAI_BASE_URL", ""), env.get("OPENAI_API_KEY", ""), False),
+            (env.get("EASEL_LLM_BASE_URL", ""), env.get("EASEL_LLM_API_KEY", ""), False),
+        ):
             if base.strip() and key.strip():
-                targets.append((base.strip().rstrip("/"), key.strip()))
+                targets.append((base.strip().rstrip("/"), key.strip(), is_anthropic))
     if channel in ("transcribe", "all") and (env.get("SILICONFLOW_API_KEY") or "").strip():
         targets.append(((env.get("SILICONFLOW_BASE_URL") or "https://api.siliconflow.cn/v1").strip().rstrip("/"),
-                        env["SILICONFLOW_API_KEY"].strip()))
+                        env["SILICONFLOW_API_KEY"].strip(), False))
 
     # 这里会把真实 API Key 当 Bearer 发出去，所以目标地址必须先过闸：
     # 合法 http(s)、且不指向本机/内网/云元数据；跳转也不跟（跟了等于绕过前面的判断）。
@@ -1696,7 +1744,7 @@ async def api_models_selftest(req: SelftestRequest):
 
     _opener = urllib.request.build_opener(_NoRedirect)
 
-    def _probe(base: str, key: str) -> dict:
+    def _probe(base: str, key: str, *, anthropic: bool = False) -> dict:
         t0 = time.time()
         if not _valid_base_url(base):
             return {"baseUrl": base, "ok": False, "ms": 0, "detail": "Base URL 不合法，未发起请求"}
@@ -1704,14 +1752,32 @@ async def api_models_selftest(req: SelftestRequest):
             return {"baseUrl": base, "ok": False, "ms": 0,
                     "detail": "目标指向本机/内网地址，已拒绝（避免把 API Key 发给内网服务）"}
         try:
-            rq = urllib.request.Request(base + "/models", headers={"Authorization": f"Bearer {key}"})
+            if anthropic:
+                # Anthropic Messages 协议的鉴权头是 x-api-key（不是 Authorization: Bearer），
+                # 且模型列表在 /v1/models。按 OpenAI 兼容方式探测只会得到 401/404，
+                # 让用户误以为 Key 无效。同时带上两种头：兼容把 /v1/models 反代成
+                # OpenAI 风格的中转站（它们只认 Bearer）。
+                url = base + "/v1/models"
+                rq = urllib.request.Request(url, headers={
+                    "x-api-key": key,
+                    "anthropic-version": "2023-06-01",
+                    "Authorization": f"Bearer {key}",
+                })
+            else:
+                rq = urllib.request.Request(base + "/models", headers={"Authorization": f"Bearer {key}"})
             with _opener.open(rq, timeout=15) as resp:
                 return {"baseUrl": base, "ok": resp.status == 200, "ms": int((time.time() - t0) * 1000)}
         except Exception as e:  # noqa: BLE001
             return {"baseUrl": base, "ok": False, "ms": int((time.time() - t0) * 1000),
                     "detail": f"{type(e).__name__}: {e}"[:140]}
 
-    results = await asyncio.to_thread(lambda: [_probe(b, k) for b, k in targets])
+    def _run_probes() -> list[dict]:
+        out: list[dict] = []
+        for base, key, is_anthropic in targets:
+            out.append(_probe(base, key, anthropic=is_anthropic))
+        return out
+
+    results = await asyncio.to_thread(_run_probes)
     return {"channel": channel, "results": results, "testedAt": int(time.time())}
 
 
