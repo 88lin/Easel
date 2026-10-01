@@ -792,6 +792,7 @@ def cmd_image2video(args: argparse.Namespace) -> int:
 
 
 def _add_common(p: argparse.ArgumentParser, need_prompt: bool) -> None:
+    p.add_argument("--env-file", help="指定 .env；默认从当前目录向上查找。")
     p.add_argument("--provider", help=f"provider（{ '/'.join(PROVIDERS) }），也可用 env VIDEO_PROVIDER")
     p.add_argument("--prompt", required=need_prompt, help="画面/镜头/风格描述")
     p.add_argument("--model", help="模型名（覆盖默认 / env）")
@@ -806,7 +807,6 @@ def _add_common(p: argparse.ArgumentParser, need_prompt: bool) -> None:
 
 
 def main() -> int:
-    load_env_file(find_default_env_file())
     ap = argparse.ArgumentParser(description="AI 视频生成（文/图生视频，多 provider）")
     sub = ap.add_subparsers(dest="cmd", required=True)
 
@@ -820,16 +820,19 @@ def main() -> int:
     p2.set_defaults(func=cmd_image2video)
 
     p3 = sub.add_parser("check", help="离线校验 provider 所需 env（不发请求）")
+    p3.add_argument("--env-file", help="指定 .env；默认从当前目录向上查找。")
     p3.add_argument("--provider", help=f"provider（{ '/'.join(PROVIDERS) }）")
     p3.set_defaults(func=cmd_check)
 
     p4 = sub.add_parser("capabilities", help="打印统一模型能力协议（不发请求）")
+    p4.add_argument("--env-file", help="指定 .env；默认从当前目录向上查找。")
     p4.add_argument("--provider", help=f"provider（{ '/'.join(PROVIDERS) }）")
     p4.add_argument("--model", help="模型名，用于读取 provider:model 覆盖")
     p4.set_defaults(func=cmd_capabilities)
 
     p5 = sub.add_parser("probe-dialogue",
                         help="真机探针：测配置模型能否逐字忠实生成台词，判 dialogue_faithful 并缓存（真发1次生成，计费）")
+    p5.add_argument("--env-file", help="指定 .env；默认从当前目录向上查找。")
     p5.add_argument("--provider", help=f"provider（{ '/'.join(PROVIDERS) }），也可用 env VIDEO_PROVIDER")
     p5.add_argument("--model", help="模型名（覆盖默认 / env）")
     p5.add_argument("--text", help="测试台词（默认一句中文测试句；可含中英混杂压测）")
@@ -845,6 +848,8 @@ def main() -> int:
     p5.set_defaults(func=cmd_probe_dialogue)
 
     args = ap.parse_args()
+    env_file = Path(args.env_file) if getattr(args, "env_file", None) else find_default_env_file()
+    load_env_file(env_file)
     if getattr(args, "output", None):
         args.output = str(validate_output_path(args.output))
     return args.func(args)
