@@ -21,12 +21,32 @@ import web.app as web
 
 
 def test_web_module_uses_config_path_helper():
-    """web/app.py 源码里不允许再出现直连 Path.home()/.openclaw-easel 的路径拼接。"""
-    src = (PROJECT_ROOT / "web" / "app.py").read_text(encoding="utf-8")
-    assert "Path.home() / '.openclaw-easel'" not in src, \
-        "web/app.py 直连 .openclaw-easel 目录 —— 改用 easel.openclaw_workspace.config_path()"
-    assert 'Path.home() / ".openclaw-easel"' not in src, \
-        "web/app.py 直连 .openclaw-easel 目录 —— 改用 easel.openclaw_workspace.config_path()"
+    """web/app.py、easel/local_agents.py 源码里不允许再出现直连
+    Path.home()/.openclaw-easel 的路径拼接（后者是合并 #70 后新增的同类直连点，
+    #71 原本只扫了 web/app.py，没扫到这个后加的模块）。"""
+    for rel in ("web/app.py", "easel/local_agents.py"):
+        src = (PROJECT_ROOT / rel).read_text(encoding="utf-8")
+        assert "Path.home() / '.openclaw-easel'" not in src, \
+            f"{rel} 直连 .openclaw-easel 目录 —— 改用 easel.openclaw_workspace.config_path()"
+        assert 'Path.home() / ".openclaw-easel"' not in src, \
+            f"{rel} 直连 .openclaw-easel 目录 —— 改用 easel.openclaw_workspace.config_path()"
+
+
+def test_local_agents_respects_state_dir_override(tmp_path, monkeypatch):
+    """local_agents 曾有自己的一套 EASEL_OPENCLAW_CONFIG 覆盖机制，跟
+    EASEL_OPENCLAW_STATE_DIR 不是同一个变量：真实场景下用户设了
+    EASEL_OPENCLAW_STATE_DIR 换配置目录，detect_local_agents() 的 configured
+    判断却仍读旧默认位置——而 web/app.py 的写入（declare provider / 切主模型）
+    已经走 config_path()，读写对不上，「一键接入」会显示没生效或重复接入。"""
+    import easel.local_agents as la
+
+    monkeypatch.setenv("EASEL_OPENCLAW_STATE_DIR", str(tmp_path))
+    oc = tmp_path / "openclaw.json"
+    oc.write_text(json.dumps({"models": {"providers": {"anthropic": {"baseUrl": "x"}}}}),
+                  encoding="utf-8")
+    monkeypatch.setattr(la.shutil, "which", lambda c: "/usr/bin/claude" if c == "claude" else None)
+    by_id = {a["id"]: a for a in la.detect_local_agents()}
+    assert by_id["claude-code"]["configured"] is True
 
 
 def test_config_path_respects_state_dir_override(tmp_path, monkeypatch):

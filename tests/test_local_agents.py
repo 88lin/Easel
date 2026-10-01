@@ -65,7 +65,7 @@ def test_configured_reflects_openclaw_json(monkeypatch, tmp_path):
     cfg = tmp_path / "openclaw.json"
     cfg.write_text(json.dumps({"models": {"providers": {"anthropic": {"baseUrl": "x"}}}}),
                    encoding="utf-8")
-    monkeypatch.setenv("EASEL_OPENCLAW_CONFIG", str(cfg))
+    monkeypatch.setenv("EASEL_OPENCLAW_STATE_DIR", str(tmp_path))
     monkeypatch.setattr(la.shutil, "which", lambda c: "/usr/bin/claude" if c == "claude" else None)
     by_id = {a["id"]: a for a in la.detect_local_agents()}
     assert by_id["claude-code"]["configured"] is True
@@ -75,7 +75,7 @@ def test_broken_config_does_not_raise(monkeypatch, tmp_path):
     """openclaw.json 损坏时探测要能降级，不能把界面打挂。"""
     cfg = tmp_path / "openclaw.json"
     cfg.write_text("{ this is not json", encoding="utf-8")
-    monkeypatch.setenv("EASEL_OPENCLAW_CONFIG", str(cfg))
+    monkeypatch.setenv("EASEL_OPENCLAW_STATE_DIR", str(tmp_path))
     monkeypatch.setattr(la.shutil, "which", lambda c: None)
     assert la.summarize_local_agents()["installedCount"] == 0
 

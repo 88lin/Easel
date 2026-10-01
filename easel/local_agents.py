@@ -16,7 +16,6 @@ OpenClaw（Easel 的底座）对其中两类有原生后端，会把 CLI 的登�
 from __future__ import annotations
 
 import json
-import os
 import shutil
 from pathlib import Path
 
@@ -80,11 +79,17 @@ KNOWN_AGENT_CLIS: tuple[dict[str, object], ...] = (
 
 
 def _openclaw_config_path() -> Path:
-    """OpenClaw 配置位置：Easel 用独立 profile（~/.openclaw-easel）。"""
-    override = os.environ.get("EASEL_OPENCLAW_CONFIG", "").strip()
-    if override:
-        return Path(override)
-    return Path.home() / ".openclaw-easel" / "openclaw.json"
+    """OpenClaw 配置位置：与 web/app.py、doctor 同一个真相源。
+
+    之前这里是独立实现（自己的 EASEL_OPENCLAW_CONFIG 变量 + Path.home() 兜底），
+    跟 easel.openclaw_workspace.config_path()（EASEL_OPENCLAW_STATE_DIR）是两套
+    不一致的覆盖机制：真实场景下用户设了 EASEL_OPENCLAW_STATE_DIR 换配置目录，
+    这里的探测/已接入判断仍然读旧默认位置——而 web/app.py 的写入（声明 provider、
+    切主模型）已经改走 config_path()，读写对不上，「一键接入」会显示没生效或
+    重复接入同一个 provider。统一委托给 config_path()，一处覆盖全生效。
+    """
+    from easel.openclaw_workspace import config_path
+    return config_path()
 
 
 def _configured_providers() -> set[str]:
