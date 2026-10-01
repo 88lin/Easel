@@ -136,7 +136,7 @@ def test_openai_models_declare_context_window_and_max_tokens(tmp_path: Path) -> 
     )
     assert raw, "OpenAI provider 的 models 没有被写入"
     assert '"contextWindow":128000' in raw
-    assert '"maxTokens":65535' in raw
+    assert '"maxTokens":16384' in raw
 
 
 @needs_bash
