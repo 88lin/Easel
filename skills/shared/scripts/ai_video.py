@@ -46,6 +46,14 @@ from typing import Any
 
 from model_registry import env_aliases, provider_ids, provider_required_env
 
+try:
+    # Windows 非交互式/管道 stdout 默认落到系统 ANSI 代码页（如 cp1252），打印中文
+    # 提示（必填/可选/缺失……）会抛 UnicodeEncodeError 而不是正常退出。
+    sys.stdout.reconfigure(encoding="utf-8", errors="replace")
+    sys.stderr.reconfigure(encoding="utf-8", errors="replace")
+except Exception:  # noqa: BLE001
+    pass
+
 UA = "Easel-ai-video/0.1"
 
 DEFAULT_DASHSCOPE_BASE = "https://dashscope.aliyuncs.com/api/v1"
