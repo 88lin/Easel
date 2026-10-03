@@ -368,8 +368,9 @@ export default function SettingsPanel({ onClose }: Props) {
   const mediaOk = (ch: string) => (mediaRows[ch] || []).some((r) => r.result === '已配置');
 
   const cachedListFor = (r: ModelRow) => {
-    if (!r.baseUrl) return undefined;
-    const hit = modelCache[r.baseUrl];
+    const base = (r.baseUrl || '').trim().replace(/\/+$/, '');
+    if (!base) return undefined;
+    const hit = modelCache[base];
     const weekAgo = Date.now() - 7 * 24 * 3600 * 1000;
     return hit && hit.fetchedAt > weekAgo && hit.models.length ? hit : undefined;
   };
@@ -421,11 +422,14 @@ export default function SettingsPanel({ onClose }: Props) {
                     onChange={(e) => ops?.onRow?.(i, { model: e.target.value })}
                     onFocus={() => setOpenDd((s) => ({ ...s, [i]: true }))}
                   />
-                  {openDd[i] && (modelLists[i]?.models.length || cachedListFor(r)?.models.length) ? (
+                  {openDd[i] ? (
                     <FixedDropdown
                       anchor={modelCellRefs.current[i]}
-                      models={modelLists[i]?.models.length ? modelLists[i].models : cachedListFor(r)!.models}
+                      models={modelLists[i]?.models.length ? modelLists[i].models : (cachedListFor(r)?.models || [])}
                       current={r.model}
+                      emptyHint={modelLists[i]?.err || undefined}
+                      onPull={() => void pullModels(i, r)}
+                      pulling={modelLists[i]?.loading}
                       onPick={(mid) => { ops?.onRow?.(i, { model: mid }); setOpenDd((s) => ({ ...s, [i]: false })); }}
                       onClose={() => setOpenDd((s) => ({ ...s, [i]: false }))}
                     />
