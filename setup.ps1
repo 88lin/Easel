@@ -106,7 +106,7 @@ Require-Command 'openclaw' '请确认 npm 全局 bin 已加入 PATH。'
 Info '安装 Easel Python 依赖...'
 & $Python -m pip install --upgrade pip --progress-bar on
 if ($LASTEXITCODE -ne 0) { Fail 'pip 升级失败。' }
-& $Python -m pip install -e $Root --progress-bar on
+& $Python -m pip install -e $Root --prefer-binary --progress-bar on
 if ($LASTEXITCODE -ne 0) { Fail 'Easel Python 依赖安装失败。' }
 Info '构建 Web 前端...'
 $Frontend = Join-Path $Root 'web\frontend'
