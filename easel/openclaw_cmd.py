@@ -15,9 +15,25 @@ back to the PATH `openclaw` executable rather than hard-failing.
 
 from __future__ import annotations
 
+import os
 import shutil
 from functools import lru_cache
 from pathlib import Path
+
+
+def _npmrc_prefix(path: Path) -> Path | None:
+    """从 .npmrc 读 prefix=（支持 #/; 注释与尾随空白）；文件不存在或未配置返回 None。"""
+    try:
+        for line in path.read_text(encoding="utf-8", errors="replace").splitlines():
+            s = line.strip()
+            if s.startswith(("prefix=", "prefix =")):
+                val = s.split("=", 1)[1].strip().strip('"')
+                if val:
+                    p = Path(val).expanduser()
+                    return p.resolve() if p.is_absolute() else p
+    except OSError:
+        pass
+    return None
 
 
 @lru_cache(maxsize=1)
@@ -52,6 +68,31 @@ def openclaw_base_cmd() -> list[str]:
             if cand.is_file():
                 return [node, str(cand)]
 
+        # npm 自定义全局前缀（官方推荐的免 sudo 装法 `npm config set prefix
+        # ~/.npm-global`）：此时 node 在系统路径、openclaw 在用户前缀下 ——
+        # 上面的 node 相对布局全部落空。按可靠性逐级探测：
+        # 显式环境变量 > .npmrc 的 prefix 键（项目级覆盖用户级，与 npm 同序）
+        # > npm_config_prefix 环境变量（仅在 npm 脚本环境导出）> ~/.npm-global 约定。
+        prefix_roots: list[Path] = []
+        explicit = os.environ.get("EASEL_NPM_GLOBAL_PREFIX", "").strip()
+        if explicit:
+            prefix_roots.append(Path(explicit))
+        npm_cfg = os.environ.get("npm_config_prefix", "").strip()
+        if npm_cfg:
+            prefix_roots.append(Path(npm_cfg))
+        for npmrc in (Path(".npmrc"), Path.home() / ".npmrc"):
+            val = _npmrc_prefix(npmrc)
+            if val:
+                prefix_roots.append(val)
+        prefix_roots.append(Path.home() / ".npm-global")
+        for root in prefix_roots:
+            for cand in (
+                root / "lib" / "node_modules" / "openclaw" / "openclaw.mjs",
+                root / "node_modules" / "openclaw" / "openclaw.mjs",
+            ):
+                if cand.is_file():
+                    return [node, str(cand)]
+
     # 3) Fallback: run the PATH `openclaw` directly. On Unix this is a real
     #    executable and works. On Windows this is the `.cmd` shim (only reached
     #    when the .mjs truly can't be found) — still better than hard-failing.
@@ -59,5 +100,6 @@ def openclaw_base_cmd() -> list[str]:
         return [oc]
 
     raise FileNotFoundError(
-        "openclaw CLI not found: no 'node'+openclaw.mjs and no 'openclaw' on PATH"
+        "openclaw CLI not found: no 'node'+openclaw.mjs and no 'openclaw' on PATH。"
+        "请先安装：npm i -g openclaw（若用自定义全局前缀，可设 EASEL_NPM_GLOBAL_PREFIX 指向该前缀）"
     )
