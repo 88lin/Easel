@@ -1341,7 +1341,9 @@ def _model_channels() -> dict:
                 mid = models[0].get("id", "") if models and isinstance(models[0], dict) else ""
                 custom_rows.append({
                     "slot": "custom", "order": 0, "name": pkey, "sub": "自定义",
-                    "type": "openai", "model": mid or "", "baseUrl": pv.get("baseUrl") or "",
+                    "type": "openai",
+                    "protocol": "anthropic" if pv.get("api") == "anthropic-messages" else "openai",
+                    "model": mid or "", "baseUrl": pv.get("baseUrl") or "",
                     "keyMasked": _mask_key(str(pv.get("apiKey") or "")),
                     "role": "主" if primary == f"{pkey}/{mid}" else "备",
                     "result": "已配置" if str(pv.get("apiKey") or "").strip() else "缺 key",
@@ -1477,6 +1479,15 @@ def _sync_openclaw_chat(provider_updates: dict[str, dict], keep_custom: set[str]
         for pkey, vals in provider_updates.items():
             prov = providers.setdefault(pkey, {})
             base, key, model = vals.get('base', ''), vals.get('key', ''), vals.get('model', '')
+            # 协议只在用户显式选择时落盘：anthropic → api=anthropic-messages；
+            # openai/空 → 不写 api 字段（openclaw 默认 openai-completions，与既有配置零差异）。
+            proto = (vals.get('protocol') or '').strip().lower()
+            if proto == 'anthropic' and prov.get('api') != 'anthropic-messages':
+                prov['api'] = 'anthropic-messages'
+                changed = True
+            elif proto == 'openai' and prov.get('api') == 'anthropic-messages':
+                prov.pop('api', None)
+                changed = True
             if base and prov.get('baseUrl') != base:
                 if _is_local_gateway_base(prov.get('baseUrl')):
                     pass  # 本地模型网关模式：保留网关地址（真实上游在 easel-models.yaml），勿改回直连
@@ -1553,6 +1564,9 @@ class ModelSaveRow(BaseModel):
     key: str = ""
     key2: str = ""
     primary: bool = False
+    # 自定义供应商的上游协议：openai（默认，/chat/completions）或 anthropic
+    # （原生 /v1/messages；中转站卖原生 Claude 格式时选它）。
+    protocol: str = ""
 
 
 class ModelSaveRequest(BaseModel):
@@ -1680,7 +1694,10 @@ async def api_settings_models_save(req: ModelSaveRequest):
                 raise HTTPException(400, f'「{name}」是内置槽位名，请换一个')
             if not model or not base:
                 raise HTTPException(400, f'自定义供应商「{name}」需要同时填模型和 Base URL')
-            provider_updates[name] = {'model': model, 'base': base, 'key': key}
+            proto = (getattr(row, 'protocol', '') or '').strip().lower()
+            if proto not in ('', 'openai', 'anthropic'):
+                raise HTTPException(400, f'协议只支持 openai / anthropic：{proto}')
+            provider_updates[name] = {'model': model, 'base': base, 'key': key, 'protocol': proto}
             keep_custom.add(name)
             pkey = name
         # 同一条规矩也得覆盖 openclaw.json 这一侧：_sync_openclaw_chat 只在 key 非空时改

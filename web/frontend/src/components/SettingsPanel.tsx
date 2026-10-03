@@ -200,12 +200,13 @@ export default function SettingsPanel({ onClose }: Props) {
   const pullModels = useCallback(async (i: number, r: ModelRow) => {
     setModelLists((m) => ({ ...m, [i]: { loading: true, models: m[i]?.models || [], err: '' } }));
     try {
-      const d = await fetchAvailableModels(r.baseUrl || '', r.keyNew || '', r.type === 'anthropic' ? 'anthropic' : 'openai', r.slot || '');
+      const proto = r.slot === 'custom' ? (r.protocol || 'openai') : (r.type === 'anthropic' ? 'anthropic' : 'openai');
+      const d = await fetchAvailableModels(r.baseUrl || '', r.keyNew || '', proto, r.slot || '');
       const fetchedAt = Date.now();
       setModelLists((m) => ({ ...m, [i]: { loading: false, models: d.models, err: d.models.length ? '' : '该端点没有返回模型', fetchedAt } }));
       if (d.models.length) {
         setModelCache((c) => {
-          const next = { ...c, [d.baseUrl]: { models: d.models, fetchedAt } };
+          const next = { ...c, [cacheKeyFor(r)]: { models: d.models, fetchedAt } };
           try { localStorage.setItem('easel_model_lists', JSON.stringify(next)); } catch { /* 忽略 */ }
           return next;
         });
@@ -270,6 +271,8 @@ export default function SettingsPanel({ onClose }: Props) {
         key: r.keyNew || '',
         key2: r.keyNew2 || '',
         primary: r.role === '主',
+        // 协议只对自定义供应商有意义；其余行后端不读这个字段
+        protocol: r.slot === 'custom' ? (r.protocol || 'openai') : undefined,
       }));
     if (!payload.length) {
       setSavedNote('当前通道没有可保存的配置');
@@ -367,10 +370,16 @@ export default function SettingsPanel({ onClose }: Props) {
 
   const mediaOk = (ch: string) => (mediaRows[ch] || []).some((r) => r.result === '已配置');
 
-  const cachedListFor = (r: ModelRow) => {
+  const cacheKeyFor = (r: ModelRow) => {
     const base = (r.baseUrl || '').trim().replace(/\/+$/, '');
-    if (!base) return undefined;
-    const hit = modelCache[base];
+    if (!base) return '';
+    return `${base}::${r.slot === 'custom' ? (r.protocol || 'openai') : (r.type === 'anthropic' ? 'anthropic' : 'openai')}`;
+  };
+
+  const cachedListFor = (r: ModelRow) => {
+    const key = cacheKeyFor(r);
+    if (!key) return undefined;
+    const hit = modelCache[key];
     const weekAgo = Date.now() - 7 * 24 * 3600 * 1000;
     return hit && hit.fetchedAt > weekAgo && hit.models.length ? hit : undefined;
   };
@@ -412,7 +421,30 @@ export default function SettingsPanel({ onClose }: Props) {
               ) : (
                 <span className="pname">{r.name}<small>{r.sub}</small></span>
               )}
-              <span>{r.type}</span>
+              {isCustom && ed && ed.base ? (
+                <select
+                  className="mock proto-sel"
+                  value={r.protocol || 'openai'}
+                  title="上游协议：中转站是 OpenAI 兼容格式选 openai；原生 Anthropic 格式（/v1/messages）选 anthropic"
+                  onChange={(e) => {
+                    ops?.onRow?.(i, { protocol: e.target.value });
+                    // 协议变了，旧协议拉来的模型列表不再适用：清内存列表 + 下拉
+                    setModelLists((m) => {
+                      const next = { ...m };
+                      delete next[i];
+                      return next;
+                    });
+                    setOpenDd((s) => ({ ...s, [i]: false }));
+                  }}
+                >
+                  <option value="openai">openai</option>
+                  <option value="anthropic">anthropic</option>
+                </select>
+              ) : isCustom ? (
+                <span title="保存后可切换协议">{r.protocol === 'anthropic' ? 'anthropic' : 'openai'}</span>
+              ) : (
+                <span>{r.type}</span>
+              )}
               {ed && ed.model && (!ops?.media || r.adv) ? (
                 <span className="model-cell" ref={(el) => { modelCellRefs.current[i] = el; }}>
                   <input

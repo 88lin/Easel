@@ -1376,3 +1376,6 @@ textarea.field { resize: vertical; min-height: 90px; }
 .model-dd .dd-pull:disabled { opacity: .6; cursor: default; }
 .settings-overlay .model-cell .fetch-err { color: var(--red, #dc2626); font-size: 12px; flex: 0 0 auto; cursor: help; }
 
+
+/* 自定义供应商行的协议选择：与行内 mock 输入同风格，宽度收敛 */
+.prow select.proto-sel { min-width: 0; width: 100%; padding: 4px 6px; font-size: 12px; }
