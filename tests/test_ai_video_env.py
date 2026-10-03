@@ -30,6 +30,7 @@ def test_ai_video_check_accepts_explicit_env_file(tmp_path: Path) -> None:
         cwd=tmp_path,
         env=env,
         text=True,
+        encoding="utf-8",
         capture_output=True,
         check=False,
     )
@@ -64,6 +65,7 @@ def test_ai_video_check_survives_non_utf8_stdout(tmp_path: Path) -> None:
         cwd=tmp_path,
         env=env,
         text=True,
+        encoding="utf-8",
         capture_output=True,
         check=False,
     )
