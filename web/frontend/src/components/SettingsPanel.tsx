@@ -1,4 +1,5 @@
 import { useCallback, useEffect, useRef, useState } from 'react';
+import { createPortal } from 'react-dom';
 import type { Dispatch, SetStateAction } from 'react';
 import EnvBoard from './EnvBoard';
 import type { JobView } from './EnvBoard';
@@ -160,8 +161,19 @@ export default function SettingsPanel({ onClose }: Props) {
   const [laModels, setLaModels] = useState<Record<string, string>>({});
   const [localAgentNote, setLocalAgentNote] = useState('');
 
-  // 拉取模型列表：{ 行号 → { loading, models, err } }
-  const [modelLists, setModelLists] = useState<Record<number, { loading: boolean; models: string[]; err: string }>>({});
+  // 拉取模型列表：{ 行号 → { loading, models, err } }。结果按 baseUrl 落 localStorage（7 天过期），
+  // 刷新页面/重开设置不用重新拉。
+  const [modelLists, setModelLists] = useState<Record<number, { loading: boolean; models: string[]; err: string; fetchedAt?: number }>>({});
+  // localStorage 里按 baseUrl 存的拉取结果（7 天过期），初始化时一次性读入。
+  const [modelCache, setModelCache] = useState<Record<string, { models: string[]; fetchedAt: number }>>(() => {
+    try {
+      const raw = localStorage.getItem('easel_model_lists');
+      return raw ? JSON.parse(raw) : {};
+    } catch { return {}; }
+  });
+  // 自定义下拉面板的展开状态与收起检测
+  const [openDd, setOpenDd] = useState<Record<number, boolean>>({});
+  const modelCellRefs = useRef<Record<number, HTMLSpanElement | null>>({});
 
   useEffect(() => {
     let alive = true;
@@ -189,7 +201,15 @@ export default function SettingsPanel({ onClose }: Props) {
     setModelLists((m) => ({ ...m, [i]: { loading: true, models: m[i]?.models || [], err: '' } }));
     try {
       const d = await fetchAvailableModels(r.baseUrl || '', r.keyNew || '', r.type === 'anthropic' ? 'anthropic' : 'openai', r.slot || '');
-      setModelLists((m) => ({ ...m, [i]: { loading: false, models: d.models, err: d.models.length ? '' : '该端点没有返回模型' } }));
+      const fetchedAt = Date.now();
+      setModelLists((m) => ({ ...m, [i]: { loading: false, models: d.models, err: d.models.length ? '' : '该端点没有返回模型', fetchedAt } }));
+      if (d.models.length) {
+        setModelCache((c) => {
+          const next = { ...c, [d.baseUrl]: { models: d.models, fetchedAt } };
+          try { localStorage.setItem('easel_model_lists', JSON.stringify(next)); } catch { /* 忽略 */ }
+          return next;
+        });
+      }
     } catch (e) {
       setModelLists((m) => ({ ...m, [i]: { loading: false, models: m[i]?.models || [], err: e instanceof Error ? e.message : '拉取失败' } }));
     }
@@ -347,6 +367,14 @@ export default function SettingsPanel({ onClose }: Props) {
 
   const mediaOk = (ch: string) => (mediaRows[ch] || []).some((r) => r.result === '已配置');
 
+  const cachedListFor = (r: ModelRow) => {
+    const base = (r.baseUrl || '').trim().replace(/\/+$/, '');
+    if (!base) return undefined;
+    const hit = modelCache[base];
+    const weekAgo = Date.now() - 7 * 24 * 3600 * 1000;
+    return hit && hit.fetchedAt > weekAgo && hit.models.length ? hit : undefined;
+  };
+
   const renderBoard = (
     rows: ModelRow[],
     ops?: { onRow?: (i: number, patch: Partial<ModelRow>) => void; onPrimary?: (i: number) => void; onRemove?: (i: number) => void; media?: boolean },
@@ -386,27 +414,50 @@ export default function SettingsPanel({ onClose }: Props) {
               )}
               <span>{r.type}</span>
               {ed && ed.model && (!ops?.media || r.adv) ? (
-                <span className="model-cell">
+                <span className="model-cell" ref={(el) => { modelCellRefs.current[i] = el; }}>
                   <input
                     className="mock"
                     value={r.model}
                     placeholder={isCustom ? '模型名' : ''}
-                    list={`ml-${i}`}
                     onChange={(e) => ops?.onRow?.(i, { model: e.target.value })}
+                    onFocus={() => setOpenDd((s) => ({ ...s, [i]: true }))}
                   />
-                  {(modelLists[i]?.models?.length || 0) > 0 && (
-                    <datalist id={`ml-${i}`}>
-                      {modelLists[i].models.map((mid) => <option key={mid} value={mid} />)}
-                    </datalist>
-                  )}
-                  <button
-                    className="adv-btn"
-                    title="从该端点拉取可用模型列表，点击输入框即可选择"
-                    onClick={() => void pullModels(i, r)}
-                    disabled={modelLists[i]?.loading}
-                  >{modelLists[i]?.loading ? '拉取中…' : '拉取'}</button>
+                  {openDd[i] ? (
+                    <FixedDropdown
+                      anchor={modelCellRefs.current[i]}
+                      models={modelLists[i]?.models.length ? modelLists[i].models : (cachedListFor(r)?.models || [])}
+                      current={r.model}
+                      emptyHint={modelLists[i]?.err || undefined}
+                      onPull={() => void pullModels(i, r)}
+                      pulling={modelLists[i]?.loading}
+                      onPick={(mid) => { ops?.onRow?.(i, { model: mid }); setOpenDd((s) => ({ ...s, [i]: false })); }}
+                      onClose={() => setOpenDd((s) => ({ ...s, [i]: false }))}
+                    />
+                  ) : null}
+                  {(() => {
+                    const mem = modelLists[i];
+                    const cached = mem?.fetchedAt ? undefined : cachedListFor(r);
+                    const has = !!(mem?.fetchedAt || cached);
+                    return (
+                      <button
+                        className={`fetch-btn${has ? ' ok' : ''}`}
+                        title={has ? `已拉取 ${(mem?.models.length || cached!.models.length)} 个模型，点击重新拉取` : '从该端点拉取可用模型列表'}
+                        onClick={() => {
+                          setOpenDd((s) => ({ ...s, [i]: true }));
+                          void pullModels(i, r);
+                        }}
+                        disabled={mem?.loading}
+                      >
+                        {mem?.loading
+                          ? <><span className="spin" />拉取中</>
+                          : has
+                            ? <span title={`已拉取 ${(mem?.models.length || cached!.models.length)} 个模型，点输入框选择`}>✓</span>
+                            : '拉取模型'}
+                      </button>
+                    );
+                  })()}
                   {modelLists[i]?.err && (
-                    <span className="hint" title={modelLists[i].err}>⚠</span>
+                    <span className="fetch-err" title={modelLists[i].err}>⚠</span>
                   )}
                 </span>
               ) : (
@@ -574,27 +625,31 @@ export default function SettingsPanel({ onClose }: Props) {
                             <div className="la-row" key={a.id}>
                               <span className="la-name">{a.label}<small>{a.path || a.command}</small></span>
                               <span className={`la-state ${a.configured ? 'ok' : a.supported ? 'todo' : 'na'}`}>
-                                {a.configured ? '已接入' : a.supported ? '可接入' : '不支持'}
+                                {a.configured ? '已接入' : a.supported ? '可接入' : '暂不支持'}
                               </span>
-                              {a.supported && !a.configured && (a.models?.length ?? 0) > 0 && (
-                                <select
-                                  className="la-model"
-                                  value={laModels[a.id] ?? ''}
-                                  onChange={(e) => setLaModels((m) => ({ ...m, [a.id]: e.target.value }))}
-                                >
-                                  <option value="">默认模型</option>
-                                  {(a.models ?? []).map((m) => (
-                                    <option key={m.id} value={m.id}>{m.name}</option>
-                                  ))}
-                                </select>
-                              )}
-                              {a.supported && !a.configured ? (
-                                <button
-                                  className="btn btn-sm"
-                                  disabled={enabling === a.id}
-                                  onClick={() => void doEnableAgent(a.id, laModels[a.id] ?? '')}
-                                >{enabling === a.id ? '接入中…' : '一键接入'}</button>
-                              ) : <span />}
+                              <span className="la-act">
+                                {a.supported && (a.models?.length ?? 0) > 0 && (
+                                  <select
+                                    className="la-model"
+                                    value={laModels[a.id] ?? ''}
+                                    title="选择该 agent 使用的模型"
+                                    onChange={(e) => setLaModels((m) => ({ ...m, [a.id]: e.target.value }))}
+                                  >
+                                    <option value="">默认模型</option>
+                                    {(a.models ?? []).map((m) => (
+                                      <option key={m.id} value={m.id}>{m.name}</option>
+                                    ))}
+                                  </select>
+                                )}
+                                {a.supported && (
+                                  <button
+                                    className="btn btn-sm"
+                                    disabled={enabling === a.id}
+                                    title={a.configured ? '重新应用所选模型（写入 openclaw.json 主模型）' : '写入 openclaw.json，免 API Key 接入'}
+                                    onClick={() => void doEnableAgent(a.id, laModels[a.id] ?? '')}
+                                  >{enabling === a.id ? '接入中…' : a.configured ? '应用模型' : '一键接入'}</button>
+                                )}
+                              </span>
                               <span className="la-hint">{a.loginHint}</span>
                             </div>
                           ))}
@@ -710,3 +765,84 @@ export default function SettingsPanel({ onClose }: Props) {
     </div>
   );
 }
+
+
+/** 模型下拉面板：portal 到 body + fixed 定位，避免被 board 的 overflow:hidden 裁切。 */
+function FixedDropdown({ anchor, models, current, emptyHint, onPull, pulling, onPick, onClose }: {
+  anchor: HTMLElement | null;
+  models: string[];
+  current: string;
+  emptyHint?: string;
+  onPull?: () => void;
+  pulling?: boolean;
+  onPick: (mid: string) => void;
+  onClose: () => void;
+}) {
+  const ref = useRef<HTMLDivElement | null>(null);
+  const [pos, setPos] = useState<{ top: number; left: number; width: number } | null>(null);
+  useEffect(() => {
+    if (!anchor) return;
+    const measure = () => {
+      const r = anchor.getBoundingClientRect();
+      const width = Math.max(r.width, 240);
+      // 优先向下展开；下方空间不足时向上翻
+      const below = window.innerHeight - r.bottom;
+      const est = Math.min(models.length, 8) * 30 + 10;
+      const openUp = below < Math.min(est, 240) && r.top > est;
+      setPos({
+        top: openUp ? r.top - Math.min(est, 240) - 4 : r.bottom + 4,
+        left: Math.max(8, Math.min(r.left, window.innerWidth - width - 8)),
+        width,
+      });
+    };
+    measure();
+    window.addEventListener('resize', measure);
+    window.addEventListener('scroll', measure, true);
+    return () => {
+      window.removeEventListener('resize', measure);
+      window.removeEventListener('scroll', measure, true);
+    };
+  }, [anchor, models.length]);
+
+  useEffect(() => {
+    const onDown = (e: MouseEvent) => {
+      if (ref.current && !ref.current.contains(e.target as Node)
+          && !(anchor && anchor.contains(e.target as Node))) onClose();
+    };
+    const onKey = (e: KeyboardEvent) => { if (e.key === 'Escape') onClose(); };
+    document.addEventListener('mousedown', onDown);
+    document.addEventListener('keydown', onKey);
+    return () => {
+      document.removeEventListener('mousedown', onDown);
+      document.removeEventListener('keydown', onKey);
+    };
+  }, [anchor, onClose]);
+
+  if (!pos) return null;
+  return createPortal(
+    <div ref={ref} className="model-dd" role="listbox" style={{ position: 'fixed', top: pos.top, left: pos.left, width: pos.width }}>
+      {models.length === 0 && (
+        <div className="dd-empty">
+          <span>{emptyHint || '该端点没有返回模型'}</span>
+          {onPull && (
+            <button className="dd-pull" onMouseDown={(e) => { e.preventDefault(); onPull(); }} disabled={pulling}>
+              {pulling ? <><span className="spin" />拉取中</> : '立即拉取'}
+            </button>
+          )}
+        </div>
+      )}
+      {models.map((mid) => (
+        <div
+          key={mid}
+          className={`dd-item${mid === current ? ' active' : ''}`}
+          onMouseDown={(e) => { e.preventDefault(); onPick(mid); }}
+        >
+          <span>{mid}</span>
+          {mid === current && <small>当前</small>}
+        </div>
+      ))}
+    </div>,
+    document.body,
+  );
+}
+
