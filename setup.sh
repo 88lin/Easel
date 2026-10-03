@@ -299,7 +299,8 @@ else
     PIP_INDEX_ARGS=(-i "$PIP_INDEX")
     ok "PyPI: $PIP_INDEX（EASEL_PIP_INDEX 指定）"
 fi
-PIP_ARGS=(install -e "$PROJECT_ROOT" --progress-bar on ${PIP_INDEX_ARGS[@]+"${PIP_INDEX_ARGS[@]}"})
+# --prefer-binary: 新版 biliup 常先发 sdist 后补 wheel，源码构建要求最新 rustc；优先选有 wheel 的旧版本
+PIP_ARGS=(install -e "$PROJECT_ROOT" --prefer-binary --progress-bar on ${PIP_INDEX_ARGS[@]+"${PIP_INDEX_ARGS[@]}"})
 if [ "$(id -u)" -eq 0 ]; then
     PIP_ARGS+=(--root-user-action=ignore)
     warn "当前以 root 安装；生产服务器建议使用虚拟环境"
