@@ -97,14 +97,6 @@ export default function OutputsPage({ jumpPath, onJumpHandled }: OutputsPageProp
   }, []);
   useEffect(() => { load(); }, [load]);
 
-  // 对话里的目录路径跳转：展开到对应层级（路径失效时 resolvePath 自动停在能到的层）
-  useEffect(() => {
-    if (!jumpPath) return;
-    setStack(jumpPath.split('/').filter(Boolean));
-    setFilter('all');
-    onJumpHandled?.();
-  }, [jumpPath, onJumpHandled]);
-
   const currentNodes = useMemo(() => resolvePath(roots, stack), [roots, stack]);
   const dirs = useMemo(
     () => currentNodes.filter((n) => n.type === 'dir').sort((a, b) => (b.mtime || 0) - (a.mtime || 0)),
@@ -159,6 +151,19 @@ export default function OutputsPage({ jumpPath, onJumpHandled }: OutputsPageProp
       } finally { if (seq === reqSeq.current) setLoading(false); }
     }
   }, []);
+
+  // 等内容树加载后区分文件与目录；文件链接直接打开预览。
+  useEffect(() => {
+    if (!jumpPath || roots.length === 0) return;
+    const parts = jumpPath.split('/').filter(Boolean);
+    const parent = parts.slice(0, -1);
+    const node = resolvePath(roots, parent).find(n => n.name === parts[parts.length - 1]);
+    setStack(node?.type === 'file' ? parent : parts);
+    setFilter('all');
+    if (node?.type === 'file') void open(node);
+    else setSelected(null);
+    onJumpHandled?.();
+  }, [jumpPath, roots, open, onJumpHandled]);
 
   const preview = () => {
     if (!selected) return null;
