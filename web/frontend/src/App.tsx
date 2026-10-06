@@ -745,22 +745,23 @@ export default function App() {
   const handlePersonaChange = useCallback((persona: string) => {
     setSelectedPersona(persona);
     setCurrentPage('chat');
-    // 修复：选/切画像不再新建空会话丢上下文。就地把当前会话的画像设为新选的、
-    // 保留会话 id 与历史（画像只是每轮的系统前缀，中途换安全）。想开新线程用「New Chat」。
+    // 一个对话对应一个画像：换画像＝开一个新对话，旧对话及其历史原样留着。
+    // （之前是就地改当前会话的 persona，于是同一段对话前后两半分属两个画像、上下文串味。）
+    // 唯一例外：当前对话还是空的（刚建、一句没说）——就地设上画像，避免在列表里堆一串空对话。
+    // 反向那条「点某个对话 → 左上角显示它的画像」在 handleSessionSelect 里做。
     const cur = sessionsRef.current.find((s) => s.id === activeSessionId);
-    if (cur) {
+    if (cur && cur.messages.length === 0) {
       setSessions((prev) => {
         const updated = prev.map((s) =>
           s.id === activeSessionId ? { ...s, persona: persona || undefined } : s);
         saveSessions(updated);
         return updated;
       });
-    } else {
-      // 无活跃会话（极少）才新建
-      const ns = createSession(persona || undefined);
-      setSessions((prev) => { const u = [ns, ...prev]; saveSessions(u); return u; });
-      setActiveSessionId(ns.id);
+      return;
     }
+    const ns = createSession(persona || undefined);
+    setSessions((prev) => { const u = [ns, ...prev]; saveSessions(u); return u; });
+    setActiveSessionId(ns.id);
   }, [activeSessionId]);
 
   return (
@@ -774,7 +775,6 @@ export default function App() {
         onNewProfile={() => setShowWizard(true)}
         sessions={sessions}
         activeSessionId={activeSessionId}
-        activeSessionHasMessages={activeSession ? activeSession.messages.length > 0 : false}
         onSessionSelect={handleSessionSelect}
         onSessionDelete={handleSessionDelete}
         onSessionRename={handleSessionRename}
