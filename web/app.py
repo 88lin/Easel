@@ -1504,6 +1504,13 @@ def _sync_openclaw_chat(provider_updates: dict[str, dict], keep_custom: set[str]
                 if models[0].get('id') != model:
                     models[0]['id'] = model
                     changed = True
+                # 模型条目必须有非空 name：OpenClaw 的配置 schema 强制要求
+                # （models.providers.<p>.models[0].name expected string, received undefined），
+                # 缺了的话保存照样返回成功，但**网关下次启动会直接拒绝加载配置**，
+                # 整个对话通道一起挂。已有的 name 不动，只补缺失的。
+                if not str(models[0].get('name') or '').strip():
+                    models[0]['name'] = model or str(models[0].get('id') or pkey)
+                    changed = True
                 prov['models'] = models
         if primary_ref:
             ref = data.setdefault('agents', {}).setdefault('defaults', {}).setdefault('model', {})
@@ -4102,12 +4109,16 @@ async def api_delete_session(session_key: str):
 
 
 TREND_SOURCES: dict[str, tuple[str, str | None]] = {
-    "weibo": ("https://60s.viki.moe/v2/weibo", "https://v2.xxapi.cn/api/weibohot"),
-    "douyin": ("https://60s.viki.moe/v2/douyin", "https://v2.xxapi.cn/api/douyinhot"),
-    "zhihu": ("https://60s.viki.moe/v2/zhihu", None),
-    "bilibili": ("https://60s.viki.moe/v2/bili", "https://v2.xxapi.cn/api/bilibilihot"),
-    "baidu": ("https://60s.viki.moe/v2/baidu/hot", "https://v2.xxapi.cn/api/baiduhot"),
-    "toutiao": ("https://60s.viki.moe/v2/toutiao", None),
+    # 2026-10-01 实测：60s.viki.moe 对这台机器长期 429 / TLS 握手超时，六个平台全取不到。
+    # 所以把当场验证能用的源放前面，60s 留作回退；知乎/头条原先压根没有第二源，
+    # 现在接的是两家的官方热榜接口（第三方免费源逐个试过：DNS 不通 / 502 / 证书错误）。
+    "weibo": ("https://v2.xxapi.cn/api/weibohot", "https://60s.viki.moe/v2/weibo"),
+    "douyin": ("https://v2.xxapi.cn/api/douyinhot", "https://60s.viki.moe/v2/douyin"),
+    "zhihu": ("https://api.zhihu.com/topstory/hot-list?limit=50", "https://60s.viki.moe/v2/zhihu"),
+    "bilibili": ("https://v2.xxapi.cn/api/bilibilihot", "https://60s.viki.moe/v2/bili"),
+    "baidu": ("https://v2.xxapi.cn/api/baiduhot", "https://60s.viki.moe/v2/baidu/hot"),
+    "toutiao": ("https://www.toutiao.com/hot-event/hot-board/?origin=toutiao_pc",
+                "https://60s.viki.moe/v2/toutiao"),
 }
 TREND_LABELS = {
     "weibo": "微博",
@@ -4120,29 +4131,62 @@ TREND_LABELS = {
 _TREND_CACHE: dict[str, tuple[float, list]] = {}
 
 
+# 各源字段名不统一，这里把见过的写法都列上：头条官方用大写 Title/HotValue，知乎官方把正文
+# 藏在 target 里，xxapi 的 B站干脆只给一个纯字符串数组。
+_HOT_TITLE_KEYS = ("title", "Title", "word", "name", "keyword")
+_HOT_HOT_KEYS = ("hot", "hot_value", "HotValue", "hotValue", "num", "detail_text")
+_HOT_URL_KEYS = ("url", "Url", "link", "mobil_url")
+
+
 def _http_get_json(url: str, timeout: int = 8):
-    req = urllib.request.Request(url, headers={"User-Agent": "Mozilla/5.0 Easel"})
+    req = urllib.request.Request(url, headers={
+        "User-Agent": "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 Chrome/124.0 Safari/537.36",
+        "Accept": "application/json, text/plain, */*",
+    })
     with urllib.request.urlopen(req, timeout=timeout) as r:
         return json.loads(r.read().decode("utf-8", "replace"))
 
 
-def _parse_hot(obj: dict) -> list[dict]:
-    data = obj.get("data")
+def _pick_str(d: object, keys: tuple[str, ...]) -> str:
+    """按 keys 顺序取第一个非空值并转成字符串（热度有数字也有字符串）。"""
+    if not isinstance(d, dict):
+        return ""
+    for k in keys:
+        v = d.get(k)
+        if isinstance(v, (int, float)) and not isinstance(v, bool):
+            return str(v)
+        if isinstance(v, str) and v.strip():
+            return v.strip()
+    return ""
+
+
+def _trend_web_url(url: str) -> str:
+    """知乎官方源给的是 api.zhihu.com/questions/<id>，换成网页地址，点开才是问题页而不是 JSON。"""
+    m = re.fullmatch(r'https?://api\.zhihu\.com/questions/(\d+)', url)
+    return f'https://www.zhihu.com/question/{m.group(1)}' if m else url
+
+
+def _parse_hot(obj: object) -> list[dict]:
+    data = obj.get("data") if isinstance(obj, dict) else None
     if isinstance(data, dict):
         data = data.get("data") or data.get("list") or []
-    out = []
-    if isinstance(data, list):
-        for it in data:
-            if not isinstance(it, dict):
-                continue
-            title = it.get("title") or it.get("word") or it.get("name") or it.get("keyword")
-            if not title:
-                continue
-            out.append({
-                "title": str(title),
-                "hot": str(it.get("hot") or it.get("hot_value") or it.get("num") or ""),
-                "url": it.get("url") or it.get("link") or it.get("mobil_url") or "",
-            })
+    out: list[dict] = []
+    if not isinstance(data, list):
+        return out
+    for it in data:
+        if isinstance(it, str):                 # 纯标题数组（xxapi 的 B站）
+            if it.strip():
+                out.append({"title": it.strip(), "hot": "", "url": ""})
+            continue
+        if not isinstance(it, dict):
+            continue
+        target = it.get("target") if isinstance(it.get("target"), dict) else {}
+        title = _pick_str(it, _HOT_TITLE_KEYS) or _pick_str(target, _HOT_TITLE_KEYS)
+        if not title:
+            continue
+        hot = _pick_str(it, _HOT_HOT_KEYS) or _pick_str(target.get("metrics_area"), ("text",))
+        url = _pick_str(it, _HOT_URL_KEYS) or _pick_str(target, _HOT_URL_KEYS)
+        out.append({"title": title, "hot": hot, "url": _trend_web_url(url)})
     return out
 
 
@@ -4180,6 +4224,8 @@ async def api_trends(platforms: str = "weibo,douyin,zhihu", limit: int = 12):
             "platform": pf,
             "label": TREND_LABELS.get(pf, pf),
             "items": items[:max(1, min(limit, 30))],
+            # 取不到数据要跟"今天真的没热搜"分开：热榜不会是空列表，空就是所有源都没取到。
+            "ok": bool(items),
         })
     return {"trends": result, "updated": int(now)}
 
