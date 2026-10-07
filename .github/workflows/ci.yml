@@ -98,6 +98,24 @@ jobs:
           if ($r) { $r | Format-Table -AutoSize RuleName,Severity,ScriptName,Line,Message }
           if ($r | Where-Object Severity -eq 'Error') { throw 'PSScriptAnalyzer 报告了 Error' }
 
+  # setup.ps1 的容忍层必须在**真实的 Windows PowerShell 5.1** 上验证一次。
+  # 作者的开发机是 Linux，pwsh 7 虽然能装但复现不了 5.1 的关键行为：Stop 模式下
+  # 原生命令的 stderr 会被包成 ErrorRecord 抛 NativeCommandError。实测把修复
+  # （ErrorActionPreference=Continue）去掉，pwsh 7 上测试照样通过 —— 所以这个
+  # job 是该缺陷类唯一真正的把关点。5.1 是 Windows 自带版本，必须先跑它。
+  powershell-tolerance:
+    name: PowerShell tolerance (${{ matrix.shell }})
+    runs-on: windows-latest
+    strategy:
+      fail-fast: false
+      matrix:
+        shell: [powershell, pwsh]   # powershell = Windows PowerShell 5.1
+    steps:
+      - uses: actions/checkout@v7
+      - name: Run tolerance probe
+        shell: ${{ matrix.shell }}
+        run: ./tests/ps_tolerance_probe.ps1
+
   # 现有 test job 从不构建前端，而 doctor.py 把 web/frontend/dist/index.html 当作安装成功的
   # 判据之一 —— TypeScript 一旦编译不过，CI 全绿而用户装完打开是空白页。
   frontend:
