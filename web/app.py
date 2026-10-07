@@ -1069,6 +1069,79 @@ async def api_status():
     return {"gateway": check_gateway(), "skills": get_skills(), "personas": list_personas()}
 
 
+@app.get("/api/settings/bootstrap")
+async def api_settings_bootstrap():
+    """首次打开时的自检：模型配好了吗、网关活着吗、上次安装留了什么没做完。
+
+    安装脚本不再在终端问 API Key（改为引导到这里配），所以前端需要一个可靠的
+    「还缺什么」判据。modelConfigured 必须同时满足两件事，这正是 doctor 里那条
+    「全绿却对话报错」防线：
+      - .env 里有可用的认证（_env_key_valid，带占位符识别）；
+      - primary 指向的 provider 在 openclaw.json 里真的配了认证
+        （_primary_model_routable）—— 只查 .env 查不出 provider 一个字没写的情况。
+    """
+    env_ok = False
+    route_ok = False
+    route_detail = ''
+    try:
+        from easel.commands.doctor import _env_key_valid, _primary_model_routable
+        env_ok = bool(_env_key_valid())
+        route_ok, route_detail = _primary_model_routable()
+    except Exception as e:  # noqa: BLE001
+        route_detail = f'自检失败：{e}'
+
+    warnings: list[dict] = []
+    try:
+        rep = PROJECT_ROOT / 'outputs' / '_install' / 'last-install.json'
+        if rep.is_file():
+            warnings = json.loads(rep.read_text(encoding='utf-8')).get('warnings') or []
+    except Exception:  # noqa: BLE001
+        warnings = []
+
+    return {
+        'modelConfigured': bool(env_ok and route_ok),
+        'envKeyOk': env_ok,
+        'routeOk': bool(route_ok),
+        'routeDetail': route_detail,
+        'gatewayUp': bool(check_gateway()),
+        'openclawConfigExists': _oc_config_path().is_file(),
+        'installWarnings': warnings,
+    }
+
+
+@app.post("/api/gateway/restart")
+async def api_gateway_restart():
+    """重启本机 gateway，让刚保存的模型配置立刻生效。
+
+    为什么需要：默认传输层是 http（见 CHAT_TRANSPORT），对话走的是一个常驻 gateway，
+    由 setup.sh 启动一次。配置改了之后它是否重新读 openclaw.json 取决于 OpenClaw 版本，
+    不是一条该押在安装流程上的假设。
+
+    安全性：web/app.py 绑 0.0.0.0 且无鉴权，所以这个端点刻意做成**无参数**，argv
+    完全固定（复用 easel.commands.gateway 的同一条分发），不接受任何外部输入拼进命令。
+    """
+    script = PROJECT_ROOT / 'scripts' / ('gateway.ps1' if os.name == 'nt' else 'gateway.sh')
+    if not script.is_file():
+        raise HTTPException(500, '找不到 gateway 启动脚本')
+    cmd = (['powershell', '-NoProfile', '-ExecutionPolicy', 'Bypass', '-File', str(script), 'restart']
+           if os.name == 'nt' else ['bash', str(script), 'restart'])
+    try:
+        r = await asyncio.get_event_loop().run_in_executor(
+            None,
+            lambda: subprocess.run(cmd, cwd=str(PROJECT_ROOT), capture_output=True,
+                                   text=True, timeout=120, env=_proxy_env()),
+        )
+    except subprocess.TimeoutExpired:
+        # 超时返回提示而不是 500：网关可能只是起得慢，用户刷新一下就好。
+        return {'ok': False, 'note': '重启超时；可稍后刷新，或手动运行 bash scripts/gateway.sh restart'}
+    except Exception as e:  # noqa: BLE001
+        return {'ok': False, 'note': f'重启失败：{e}'}
+    up = check_gateway()
+    tail = clean_agent_output(r.stdout or '')[-200:]
+    return {'ok': bool(up), 'gatewayUp': bool(up),
+            'note': tail or ('网关已重启' if up else '网关未就绪，请查看 /tmp/easel-gateway.log')}
+
+
 @app.get("/api/personas")
 async def api_personas():
     return list_personas()

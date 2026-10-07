@@ -101,3 +101,61 @@ def test_real_key_reports_configured(tmp_path, monkeypatch):
     anth = [r for r in rows if r["slot"] == "anthropic"]
     assert anth and anth[0]["result"] == "已配置"
     assert anth[0]["keyMasked"]
+
+
+# ── /api/settings/bootstrap：首开自检 ────────────────────────────────
+
+def test_bootstrap_reports_unconfigured_for_placeholder(tmp_path, monkeypatch):
+    """占位符 key + 无路由时必须报 modelConfigured=false。
+
+    安装不再在终端问 key，前端靠这个判据决定是否把用户直接带到模型设置页；
+    判错的话用户会落在一个看起来正常、实际不能对话的界面上。
+    """
+    from fastapi.testclient import TestClient
+
+    monkeypatch.setattr(app, "ENV_FILE", tmp_path / ".env")
+    (tmp_path / ".env").write_text("ANTHROPIC_API_KEY=sk-ant-REPLACE_ME\n", encoding="utf-8")
+    monkeypatch.setattr("easel.commands.doctor._env_key_valid", lambda: False)
+    monkeypatch.setattr("easel.commands.doctor._primary_model_routable",
+                        lambda: (False, "provider 未配置认证"))
+
+    local = "http://127.0.0.1:7860"
+    with TestClient(app.app, base_url=local, client=("127.0.0.1", 51234),
+                    headers={"Origin": local}) as c:
+        r = c.get("/api/settings/bootstrap")
+    assert r.status_code == 200
+    d = r.json()
+    assert d["modelConfigured"] is False
+    assert d["envKeyOk"] is False
+    assert d["routeOk"] is False
+
+
+def test_bootstrap_requires_both_env_and_route(monkeypatch):
+    """.env 有 key 但 provider 没写进 openclaw 时也必须算未配置。
+
+    这正是 doctor 里那条「全绿却对话报错」防线：只查 .env 查不出 provider 一个字
+    没写的情况，两个判据必须同时成立。
+    """
+    from fastapi.testclient import TestClient
+
+    monkeypatch.setattr("easel.commands.doctor._env_key_valid", lambda: True)
+    monkeypatch.setattr("easel.commands.doctor._primary_model_routable",
+                        lambda: (False, "No route-compatible authentication source"))
+    local = "http://127.0.0.1:7860"
+    with TestClient(app.app, base_url=local, client=("127.0.0.1", 51234),
+                    headers={"Origin": local}) as c:
+        d = c.get("/api/settings/bootstrap").json()
+    assert d["modelConfigured"] is False, "只有 .env 有 key 不等于配好了"
+    assert d["envKeyOk"] is True and d["routeOk"] is False
+
+
+def test_gateway_restart_takes_no_parameters() -> None:
+    """该端点刻意无参数：web/app.py 绑 0.0.0.0 且无鉴权，argv 必须完全固定。"""
+    import inspect
+
+    src = inspect.getsource(app.api_gateway_restart)
+    sig = inspect.signature(app.api_gateway_restart)
+    assert not sig.parameters, f"不允许接受参数：{sig}"
+    # 命令里只许出现字面量与脚本路径，不得有外部输入拼接
+    assert "'restart'" in src or '"restart"' in src
+    assert "req." not in src and "request" not in src.lower().replace("subprocess", "")
