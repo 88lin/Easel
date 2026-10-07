@@ -20,6 +20,7 @@ if [ -z "${BASH_VERSION:-}" ]; then
 fi
 
 GREEN='\033[0;32m'
+# shellcheck disable=SC2034  # 成套的调色板，RED 目前只被失败分支按需取用
 RED='\033[0;31m'
 YELLOW='\033[0;33m'
 CYAN='\033[0;36m'
@@ -108,7 +109,8 @@ else
     if [ "$(uname -s)" = "Darwin" ]; then
         if command -v brew >/dev/null 2>&1; then
             brew install node@24
-            export PATH="$(brew --prefix node@24)/bin:$PATH"
+            BREW_NODE24_PREFIX="$(brew --prefix node@24)"
+            export PATH="$BREW_NODE24_PREFIX/bin:$PATH"
         else
             echo "macOS 未找到 Homebrew。请先安装 Node.js 24.16+（Homebrew: brew install node@24），再重新运行 setup.sh。" >&2
             exit 1

@@ -6,7 +6,6 @@ set -euo pipefail
 # 用法: ./scripts/gateway.sh {start|stop|restart|status|logs}
 
 PROFILE="easel"
-OC="openclaw --profile $PROFILE"
 LOGFILE="/tmp/easel-gateway.log"
 ADAPTER_LOGFILE="/tmp/easel-openai-maas-adapter.log"
 PROJECT_ROOT="$(cd "$(dirname "$0")/.." && pwd)"
@@ -165,11 +164,12 @@ case "${1:-status}" in
         # web 的 cli 路径是每轮往客户端 env 里塞这个值，但 http 直连路径下 agent 跑在**本进程**里、
         # 拿不到那份 env —— 不在这里补，2026.9.x 上会从卡片模式悄悄退化成文字问答。该值只取决于
         # OpenClaw 版本有没有 question.* RPC，进程级导出一次即可。
-        export EASEL_ASKUSER_CARDS="$(
+        # 先赋值再 export：合成一句会让 export 的退出码掩盖命令替换里 python3 的失败。
+        ASKUSER_CARDS="$(
             PYTHONPATH="$PROJECT_ROOT${PYTHONPATH:+:$PYTHONPATH}" python3 -c \
                 'from easel.gateway_questions import question_bridge_supported as s; print("1" if s() else "0")' \
-                2>/dev/null | tail -n 1)"
-        export EASEL_ASKUSER_CARDS="${EASEL_ASKUSER_CARDS:-0}"   # 探不出来就按"没有卡片"走文字问答
+                2>/dev/null | tail -n 1)" || ASKUSER_CARDS=""
+        export EASEL_ASKUSER_CARDS="${ASKUSER_CARDS:-0}"   # 探不出来就按"没有卡片"走文字问答
         _detach openclaw --profile "$PROFILE" gateway run --force --allow-unconfigured --bind loopback > "$LOGFILE" 2>&1
         # 轮询到 healthz 通，而不是睡死 4 秒就下结论：OpenClaw 2026.9.x 要加载十几个插件，
         # 实测冷启动 ~13s，固定 sleep 4 会让每次 start（以及 setup.sh 的第 8 步）都打出
