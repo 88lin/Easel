@@ -22,9 +22,30 @@ def _read(p: Path) -> str:
     return p.read_text(encoding="utf-8-sig")
 
 
-def test_setup_ps1_keeps_bom() -> None:
-    """PS 5.1 需要 BOM 才能正确解析文件里的中文字符串，丢了就整文件语法错误。"""
-    assert SETUP_PS1.read_bytes()[:3] == b"\xef\xbb\xbf", "setup.ps1 必须保持 UTF-8 with BOM"
+def test_all_non_ascii_ps1_files_keep_bom() -> None:
+    """含非 ASCII 字符的 .ps1 必须带 UTF-8 BOM。
+
+    PS 5.1 没有 BOM 时按系统 ANSI 代码页解析，中文字符串会乱码甚至报语法错误。
+    本仓库每个 .ps1 都带中文注释，所以这条对全部文件生效 —— 新增 ps_tolerance_probe.ps1
+    时就漏了 BOM，而它恰恰要在 CI 的 5.1 下运行，是 PSScriptAnalyzer 替我抓到的。
+    """
+    import subprocess
+
+    out = subprocess.run(["git", "ls-files", "*.ps1"], cwd=PROJECT_ROOT,
+                         capture_output=True, text=True, timeout=60).stdout
+    checked = 0
+    for rel in out.split():
+        if "vendor/" in rel:
+            continue
+        data = (PROJECT_ROOT / rel).read_bytes()
+        try:
+            data.decode("ascii")
+            continue        # 纯 ASCII 文件不需要 BOM
+        except UnicodeDecodeError:
+            pass
+        assert data[:3] == b"\xef\xbb\xbf", f"{rel} 含非 ASCII 字符，必须带 UTF-8 BOM"
+        checked += 1
+    assert checked >= 2, f"只检查到 {checked} 个文件，git ls-files 可能失效了"
 
 
 def test_native_stderr_redirect_only_inside_continue_scope() -> None:

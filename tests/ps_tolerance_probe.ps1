@@ -1,3 +1,7 @@
+﻿[Diagnostics.CodeAnalysis.SuppressMessageAttribute('PSAvoidUsingInvokeExpression', '',
+    Justification = '测试探针需要按内容锚点把 setup.ps1 的容忍层切出来求值，这正是被测对象')]
+param()
+
 # CI 用：在真实的 Windows PowerShell 5.1 / pwsh 7 上验证 setup.ps1 的容忍层。
 #
 # 关键被测行为：openclaw 向 stderr 报错并退出 1 时，脚本必须存活并记一条警告。
