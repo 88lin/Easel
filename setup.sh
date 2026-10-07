@@ -609,7 +609,7 @@ else
 fi
 
 # ---- 7. 认证配置 ----
-step "7/8" "配置模型服务" "Agent API：Anthropic · OpenAI · 兼容接口"
+step "7/8" "同步模型配置" "把 .env 里的认证写进 OpenClaw profile"
 info "配置认证..."
 if [ -f "$PROJECT_ROOT/.env" ]; then
     ok ".env 已存在"

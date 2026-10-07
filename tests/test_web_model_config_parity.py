@@ -95,7 +95,10 @@ def test_placeholder_key_reports_missing(tmp_path, monkeypatch):
 def test_real_key_reports_configured(tmp_path, monkeypatch):
     """反向用例：真 key 仍要显示已配置，别把判据收得过紧。"""
     envf = tmp_path / ".env"
-    envf.write_text("ANTHROPIC_API_KEY=sk-ant-api03-RealLookingKeyValue123\n", encoding="utf-8")
+    # 刻意不用 sk-ant-api03-… 这种真实格式：GitHub 的 secret scanning push
+    # protection 会把它当成泄露的 Anthropic key 而拦住推送。_is_set 只判
+    # 「非空且非占位符」，随便一个不含 REPLACE_ME 的值就够了。
+    envf.write_text("ANTHROPIC_API_KEY=dummy-value-for-unit-test\n", encoding="utf-8")
     monkeypatch.setattr(app, "ENV_FILE", envf)
     rows = app._model_channels()["channels"]["chat"]["rows"]
     anth = [r for r in rows if r["slot"] == "anthropic"]

@@ -7,7 +7,85 @@ $env:PYTHONUTF8 = '1'
 
 function Info($Message) { Write-Host "[easel] $Message" -ForegroundColor Cyan }
 function Ok($Message) { Write-Host "  [OK] $Message" -ForegroundColor Green }
-function Fail($Message) { Write-Error $Message; exit 1 }
+function Warn($Message) { Write-Host "  [!] $Message" -ForegroundColor Yellow }
+# 用 [OK] / [!] 这种 ASCII 标记而不是 ✓ / ⚠：cmd.exe 与较老的终端代码页并不可靠地
+# 支持 UTF-8，而本文件原有的 Ok() 已经是 [OK] 风格，不引入第二套符号。
+function Step($Index, $Title, $Subtitle) {
+    Write-Host ''
+    Write-Host ('-' * 52) -ForegroundColor DarkBlue
+    Write-Host "  [$Index] " -NoNewline -ForegroundColor Magenta
+    Write-Host $Title -ForegroundColor Cyan
+    Write-Host "  $Subtitle" -ForegroundColor DarkGray
+}
+
+# 长耗时步骤转圈。注意三点：
+#   1. 用 Start-Process -PassThru 轮询 HasExited，不要用 Start-Job —— job 跑在全新
+#      runspace 里，拿不到 $Root / $Python / Install-RequiredCommand 改过的 PATH。
+#   2. 非 TTY（CI、重定向）下不要转圈：1Hz 的 `r 会刷出几千行无用日志。
+#   3. 失败时把日志尾部打出来，否则用户只看到一个 [FAIL] 不知道发生了什么。
+function Invoke-WithProgress([string]$Label, [string]$Exe, [string[]]$Arguments, [string]$WorkDir = $null) {
+    $log = Join-Path ([System.IO.Path]::GetTempPath()) "easel-install-$(Get-Random).log"
+    $startArgs = @{ FilePath = $Exe; ArgumentList = $Arguments; PassThru = $true;
+                    NoNewWindow = $true; RedirectStandardOutput = $log;
+                    RedirectStandardError = "$log.err" }
+    if ($WorkDir) { $startArgs['WorkingDirectory'] = $WorkDir }
+    $proc = Start-Process @startArgs
+    $quiet = [Console]::IsOutputRedirected
+    if ($quiet) { Write-Host "  [....] $Label 开始（非交互终端，不显示进度）" }
+    $frames = @('[>   ]', '[=>  ]', '[==> ]', '[===>]')
+    $t0 = Get-Date
+    $i = 0
+    while (-not $proc.HasExited) {
+        if (-not $quiet) {
+            $el = [int]((Get-Date) - $t0).TotalSeconds
+            Write-Host ("`r  {0} 进行中 {1} 已运行 {2}s" -f $frames[$i % 4], $Label, $el) -NoNewline
+            $i++
+        }
+        Start-Sleep -Seconds 1
+    }
+    if (-not $quiet) { Write-Host "`r$(' ' * 60)`r" -NoNewline }
+    if ($proc.ExitCode -eq 0) {
+        Ok "$Label 完成"
+        Remove-Item $log, "$log.err" -Force -ErrorAction SilentlyContinue
+        return $true
+    }
+    Write-Host "  [FAIL] $Label 失败" -ForegroundColor Red
+    foreach ($f in @($log, "$log.err")) {
+        if (Test-Path $f) { Get-Content $f -Tail 40 -ErrorAction SilentlyContinue | ForEach-Object { Write-Host $_ } }
+    }
+    Remove-Item $log, "$log.err" -Force -ErrorAction SilentlyContinue
+    return $false
+}
+
+# 结尾汇总。变宽内容不套框线：中文是双宽字符，按字符数 padding 的 ASCII 框一定错位。
+function Show-Summary {
+    $n = $script:Warnings.Count
+    Write-Host ''
+    if ($n -eq 0) { Write-Host '  [OK] Easel 安装完成' -ForegroundColor Green }
+    else { Write-Host "  [OK] Easel 安装完成（有 $n 项降级）" -ForegroundColor Yellow }
+    if ($n -gt 0) {
+        Write-Host ''
+        Write-Host "  需要处理（$n）：" -ForegroundColor Yellow
+        foreach ($sev in @('high', 'low')) {
+            foreach ($w in $script:Warnings) {
+                if ($w.Severity -ne $sev) { continue }
+                Write-Host "   [!] $($w.Label) - $($w.Detail)" -ForegroundColor Yellow
+                if ($w.Fix) { Write-Host "       -> $($w.Fix)" -ForegroundColor DarkGray }
+            }
+        }
+        Write-Host ''
+        Write-Host '  以上均不影响已装好的部分；逐项修完可用 easel doctor 复检。' -ForegroundColor DarkGray
+        Write-Host '  若希望这些问题直接让安装失败（CI/自动化场景）：$env:EASEL_SETUP_STRICT=1' -ForegroundColor DarkGray
+    }
+}
+
+# 致命退出前也要把汇总打出来：第 8 步挂掉时，用户仍然需要知道第 4~7 步降级了什么。
+function Fail($Message) {
+    if ($script:Warnings) { Show-Summary }
+    Write-Host ''
+    Write-Host "  [X] 安装中止：$Message" -ForegroundColor Red
+    exit 1
+}
 function Assert-Command($Name, $Hint) { if (-not (Get-Command $Name -ErrorAction SilentlyContinue)) { Fail "$Name 未找到。$Hint" } }
 function Install-RequiredCommand($Name, $PackageId, $Hint) {
     if (Get-Command $Name -ErrorAction SilentlyContinue) { return }
@@ -179,6 +257,7 @@ print(json.dumps(p))
 }
 
 Write-Host "`nEasel · Windows 安装向导" -ForegroundColor Magenta
+Step '1/8' '检查系统环境' 'Python · Node.js · Git · FFmpeg'
 Info '检查系统环境...'
 Install-RequiredCommand 'git' 'Git.Git' '请安装 Git for Windows 并加入 PATH。'
 Install-RequiredCommand 'node' 'OpenJS.NodeJS.LTS' '请安装 Node.js 24.16+ 并加入 PATH。'
@@ -201,14 +280,17 @@ if (-not (Test-Path $Venv)) { Info '创建 Python 虚拟环境...'; & $pythonCom
 if (-not (Test-Path $Python)) { Fail 'Python venv 创建失败。' }
 Ok '系统环境检查完成'
 
+Step '2/8' '检测 OpenClaw' '已有安装将直接复用'
 Info '安装 OpenClaw...'
 if (-not (Get-Command openclaw -ErrorAction SilentlyContinue)) { & npm install -g openclaw@latest --loglevel warn; if ($LASTEXITCODE -ne 0) { Fail 'OpenClaw 安装失败。' } }
 Assert-Command 'openclaw' '请确认 npm 全局 bin 已加入 PATH。'
+Step '3/8' '安装 Easel 运行依赖' 'Web · 媒体 · 浏览器发布'
 Info '安装 Easel Python 依赖...'
 & $Python -m pip install --upgrade pip --progress-bar on
 if ($LASTEXITCODE -ne 0) { Fail 'pip 升级失败。' }
 & $Python -m pip install -e $Root --prefer-binary --progress-bar on
 if ($LASTEXITCODE -ne 0) { Fail 'Easel Python 依赖安装失败。' }
+Step '4/8' '构建 Web 工作台' 'React production bundle'
 Info '构建 Web 前端...'
 $Frontend = Join-Path $Root 'web\frontend'
 Push-Location $Frontend
@@ -218,10 +300,15 @@ try {
     & npm run build
     if ($LASTEXITCODE -ne 0) { Fail 'Web 前端构建失败。' }
 } finally { Pop-Location }
+Step '5/8' '安装 Playwright Chromium' '浏览器登录与发布'
 Info '安装 Playwright Chromium...'
-& $Python -m playwright install chromium
-if ($LASTEXITCODE -ne 0) { Fail 'Playwright Chromium 安装失败。' }
+# 降级而非中断：这是个 ~300MB 的下载，弱网下失败很常见，且只影响浏览器登录/发布。
+if (-not (Invoke-WithProgress 'Playwright Chromium' $Python @('-m','playwright','install','chromium'))) {
+    Add-Warning 'Playwright Chromium' '下载失败，浏览器登录/发布不可用' `
+        "$Python -m playwright install chromium"
+}
 
+Step '6/8' '初始化 Easel profile' '独立配置、独立 workspace、独立 Gateway'
 Info '准备 Easel OpenClaw profile...'
 $onboardHelp = (Invoke-NativeCapture 'openclaw' @('onboard','--help')).Output
 $onboardArgs = @('--profile','easel','onboard','--non-interactive','--mode','local','--accept-risk')
@@ -240,6 +327,7 @@ if (-not $onboard.Ok -and -not (Test-Path (Join-Path $env:USERPROFILE '.openclaw
     Add-Warning 'OpenClaw profile 初始化' 'onboard 返回非零，但已有 profile 配置，继续安装' '' 'high'
 }
 
+Step '7/8' '同步 skills 与配置' 'workspace · OpenClaw 认证'
 Info '同步 skills 与 workspace...'
 # workspace 目标不能写死：OpenClaw 的默认布局变过（2026.6.x 是 ~\.openclaw\workspace-easel，
 # 2026.9.x 起是 ~\.openclaw-easel\workspace）。写死其一就会在另一个版本上装到 agent 不读的
@@ -435,8 +523,26 @@ if (Test-OpenClawSupport @('config') 'validate') {
 } else {
     Add-Warning 'OpenClaw 配置校验' '当前 OpenClaw 不支持 config validate，已跳过整体校验'
 }
-& powershell -NoProfile -ExecutionPolicy Bypass -File (Join-Path $Root 'scripts\gateway.ps1') start
-if ($LASTEXITCODE -ne 0) { Fail 'Easel Gateway 启动失败。' }
-Ok 'Easel Windows 安装完成'
-Write-Host "启动 Web：$Venv\Scripts\easel.exe web" -ForegroundColor Cyan
-Write-Host "检查环境：$Venv\Scripts\easel.exe doctor" -ForegroundColor Cyan
+Step '8/8' '启动并验证' '配置校验 · Gateway health'
+$gw = Invoke-NativeCapture 'powershell' @('-NoProfile','-ExecutionPolicy','Bypass','-File',
+    (Join-Path $Root 'scripts\gateway.ps1'), 'start')
+($gw.Output -split "`n") | Where-Object { $_ } | ForEach-Object { Write-Host $_ }
+# 降级而非中断：gateway 随时可以重启，没理由让一次十几分钟的安装在最后一步作废。
+if (-not $gw.Ok) {
+    Add-Warning 'Gateway' '启动失败' 'powershell -File scripts\gateway.ps1 start' 'high'
+}
+
+Show-Summary
+if (-not (Test-UsableKey $envValues['ANTHROPIC_API_KEY']) -and
+    -not (Test-UsableKey $envValues['OPENAI_API_KEY']) -and
+    -not (Test-UsableKey $envValues['EASEL_LLM_API_KEY'])) {
+    Write-Host ''
+    Write-Host '  下一步：在浏览器里配置模型' -ForegroundColor Yellow
+    Write-Host "    1. $Venv\Scripts\easel.exe web" -ForegroundColor Cyan
+    Write-Host '    2. 打开 http://localhost:7860' -ForegroundColor Cyan
+    Write-Host '    3. 左下角设置 -> 模型配置 -> 填 API Key -> 保存' -ForegroundColor Cyan
+    Write-Host '  保存后 Easel 会自动写好 openclaw 配置并重启网关，不用再跑 setup.ps1。' -ForegroundColor DarkGray
+}
+Write-Host ''
+Write-Host "  启动 Web：$Venv\Scripts\easel.exe web" -ForegroundColor Cyan
+Write-Host "  检查环境：$Venv\Scripts\easel.exe doctor" -ForegroundColor Cyan

@@ -4,6 +4,11 @@ on:
   push:
     branches: [main]
   pull_request:
+  schedule:
+    # 每天 03:17 UTC 跑一次真实安装。错开整点：整点是 GitHub Actions 的高峰，
+    # 排队时间明显更长。
+    - cron: '17 3 * * *'
+  workflow_dispatch:
 
 permissions:
   contents: read
@@ -134,3 +139,73 @@ jobs:
       - run: npm ci
       - run: npm run lint
       - run: npm run build
+
+  # 真·跑一遍安装。只在 nightly / 手动触发 / 打了 ci:full-install 标签的 PR 上跑：
+  # 一次完整安装要下 ~1GB（pip 的 opencv/faster-whisper/rembg + npm + Chromium），
+  # windows-latest 上 I/O 更慢且按 2 倍计费，挂在每个 PR 上并不现实。
+  # 日常 PR 由 lint-installers 与 pytest 里的 check-mode 回归把关。
+  install-real:
+    name: Real install (${{ matrix.os }})
+    if: >-
+      github.event_name == 'schedule' || github.event_name == 'workflow_dispatch'
+      || contains(github.event.pull_request.labels.*.name, 'ci:full-install')
+    strategy:
+      fail-fast: false
+      matrix:
+        os: [ubuntu-latest, windows-latest]
+    runs-on: ${{ matrix.os }}
+    timeout-minutes: 60
+    steps:
+      - uses: actions/checkout@v7
+      - uses: actions/setup-node@v6
+        with:
+          node-version: '24'
+      - uses: actions/setup-python@v7
+        with:
+          python-version: '3.12'
+          cache: pip
+
+      # CI 里没有真 key。doctor 的认证检查是静态的（只判「非空且非占位符」），
+      # 给一个语法合法的假值即可走通整条配置链路。
+      - name: Seed .env
+        shell: bash
+        run: |
+          cp .env.example .env
+          printf '\nEASEL_LLM_API_KEY=sk-ci-not-a-real-key-0123456789\n' >> .env
+          printf 'EASEL_LLM_BASE_URL=https://example.invalid/v1\n' >> .env
+          printf 'CLAUDE_MODEL=anthropic/claude-sonnet-4-6\n' >> .env
+
+      - name: Install (Linux/macOS)
+        if: runner.os != 'Windows'
+        run: bash setup.sh
+
+      - name: Install (Windows)
+        if: runner.os == 'Windows'
+        shell: powershell       # 5.1：Windows 自带版本，必须按它验证
+        run: ./setup.ps1
+
+      # 这一条是重点：setup 必须可重入。2026.9.x 拒绝「会删掉已存在子键的整块写入」，
+      # 于是首次安装能过、第二次重跑必失败 —— 两边都真实发生过，只有跑第二遍才看得见。
+      - name: Install again (idempotency)
+        if: runner.os != 'Windows'
+        run: bash setup.sh
+
+      - name: Install again (idempotency, Windows)
+        if: runner.os == 'Windows'
+        shell: powershell
+        run: ./setup.ps1
+
+      - name: doctor
+        shell: bash
+        run: |
+          if [ -x .venv/bin/easel ]; then .venv/bin/easel doctor
+          else .venv/Scripts/easel.exe doctor; fi
+
+      - name: Upload install report
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: install-report-${{ matrix.os }}
+          path: |
+            outputs/_install/last-install.json
+          if-no-files-found: warn
