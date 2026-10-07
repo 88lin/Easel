@@ -1332,33 +1332,38 @@ def _model_channels() -> dict:
     chat_rows = []
     ob = (env.get("OPENAI_BASE_URL") or "").strip()
     om = (env.get("OPENAI_MODEL") or "").strip()
-    ok_key = bool((env.get("OPENAI_API_KEY") or "").strip())
+    # 这三行一律用 _is_set 而不是裸真值判断：全新安装复制的 .env.example 里写着
+    # ANTHROPIC_API_KEY=sk-ant-REPLACE_ME，裸判真会让设置面板显示「已配置」并给出
+    # 一个假的 «sk-an…E_ME»。把用户从终端引导到浏览器配置时，这等于把人送进坑里。
+    ok_key = _is_set(env.get("OPENAI_API_KEY"))
     if ob or ok_key:
         chat_rows.append({
             "slot": "openai", "order": 1, "name": "deepseek",
             "sub": "官方直连",
             "type": "openai", "model": om or "deepseek-chat",
-            "baseUrl": ob, "keyMasked": _mask_key(env.get("OPENAI_API_KEY", "")),
+            "baseUrl": ob, "keyMasked": _mask_key(env.get("OPENAI_API_KEY", "") if ok_key else ""),
             "role": "主" if primary.startswith("openai/") else "备",
             "result": "已配置" if ok_key else "缺 key",
         })
     ab = (env.get("ANTHROPIC_BASE_URL") or "").strip()
     ak = (env.get("ANTHROPIC_API_KEY") or "").strip()
+    ak_ok = _is_set(ak)
     if ab or ak:
         chat_rows.append({
             "slot": "anthropic", "order": len(chat_rows) + 1, "name": "anthropic", "sub": "官方直连",
             "type": "anthropic", "model": (env.get("CLAUDE_MODEL") or "claude-sonnet-4-6").strip(),
-            "baseUrl": ab or "官方", "keyMasked": _mask_key(ak),
-            "role": "备", "result": "已配置" if ak else "缺 key",
+            "baseUrl": ab or "官方", "keyMasked": _mask_key(ak if ak_ok else ""),
+            "role": "备", "result": "已配置" if ak_ok else "缺 key",
         })
     lb = (env.get("EASEL_LLM_BASE_URL") or "").strip()
     lk = (env.get("EASEL_LLM_API_KEY") or "").strip()
+    lk_ok = _is_set(lk)
     if lb or lk:
         chat_rows.append({
             "slot": "relay", "order": len(chat_rows) + 1, "name": "relay", "sub": "中转站",
             "type": "openai", "model": (env.get("CLAUDE_MODEL") or "deepseek-chat").strip(),
-            "baseUrl": lb or "（未配置）", "keyMasked": _mask_key(lk),
-            "role": "备", "result": "已配置" if lk else "缺 key",
+            "baseUrl": lb or "（未配置）", "keyMasked": _mask_key(lk if lk_ok else ""),
+            "role": "备", "result": "已配置" if lk_ok else "缺 key",
         })
 
     custom_rows = []
@@ -1377,9 +1382,10 @@ def _model_channels() -> dict:
                     "type": "openai",
                     "protocol": "anthropic" if pv.get("api") == "anthropic-messages" else "openai",
                     "model": mid or "", "baseUrl": pv.get("baseUrl") or "",
-                    "keyMasked": _mask_key(str(pv.get("apiKey") or "")),
+                    "keyMasked": _mask_key(str(pv.get("apiKey") or "")
+                                           if _is_set(str(pv.get("apiKey") or "")) else ""),
                     "role": "主" if primary == f"{pkey}/{mid}" else "备",
-                    "result": "已配置" if str(pv.get("apiKey") or "").strip() else "缺 key",
+                    "result": "已配置" if _is_set(str(pv.get("apiKey") or "")) else "缺 key",
                     "deletable": True,
                 })
     except Exception:  # noqa: BLE001
@@ -1571,14 +1577,34 @@ def _sync_anthropic_provider(base: str, key: str) -> str:
         providers = data.setdefault('models', {}).setdefault('providers', {})
         prov = providers.get('anthropic')
         target_base = base or 'https://api.anthropic.com'
+        # 早退判据必须把 api 一起算上：否则一个「baseUrl/apiKey 都对、但缺 api」的
+        # 残缺 provider（旧版本 Web 面板写出来的就是这样）永远修不回来。
         if isinstance(prov, dict) and prov.get('baseUrl') == target_base \
+                and prov.get('api') == 'anthropic-messages' \
                 and (not key or prov.get('apiKey') == key):
             return ''
         new_prov = dict(prov) if isinstance(prov, dict) else {'models': []}
         new_prov['baseUrl'] = target_base
+        # api 必须显式写死。上面的 docstring 一直这么说，但代码此前漏了这一行 ——
+        # 不写时 OpenClaw 2026.2.x 会把该 provider 当成 openai-responses、请求打到
+        # /responses，上游的报错被 gateway 当成正常回复塞进 choices[0].message.content，
+        # 于是 Web 对话静默显示「（无输出）」。与 setup.sh 的 oc_write_anthropic 对齐。
+        new_prov['api'] = 'anthropic-messages'
+        # setup.sh 同样会设这个；两边都写，provider 才不会因为「谁后写」而缺字段。
+        new_prov.setdefault('timeoutSeconds', 600)
         if key:
             new_prov['apiKey'] = key
         new_prov.setdefault('models', [])
+        # 一次性迁移：更早的 Web 面板会把中转站写成一个名叫 relay 的 provider，但从来
+        # 不给它填内容，primary 却指过去。本次若没拿到 key，就把 relay 里的捡回来，
+        # 免得老用户升级后 key 变成孤儿；迁移后删掉 relay，避免两处并存各写一半。
+        legacy = providers.get('relay')
+        if isinstance(legacy, dict):
+            if not new_prov.get('apiKey') and legacy.get('apiKey'):
+                new_prov['apiKey'] = legacy['apiKey']
+            if not base and legacy.get('baseUrl'):
+                new_prov['baseUrl'] = legacy['baseUrl']
+            providers.pop('relay', None)
         providers['anthropic'] = new_prov
         shutil.copy2(oc, oc.parent / (oc.name + '.bak-web'))
         tmp = oc.parent / (oc.name + '.tmp')
@@ -1705,7 +1731,12 @@ async def api_settings_models_save(req: ModelSaveRequest):
             if key:
                 updates['EASEL_LLM_API_KEY'] = key
             if is_chat:
-                pkey = 'relay'
+                # 落进 anthropic provider，而不是造一个名叫 relay 的 provider。
+                # setup.sh 的 EASEL_LLM_* 分支写的就是 models.providers.anthropic
+                # （见 oc_write_anthropic）。此前这里只写 .env、从不创建 provider，
+                # 却把 primary 指向 relay/<model> —— 对话直接报
+                # 「No route-compatible authentication source is configured for relay」。
+                pkey = 'anthropic'
         elif slot == 'anthropic':
             if model:
                 updates['CLAUDE_MODEL'] = model
@@ -1744,7 +1775,10 @@ async def api_settings_models_save(req: ModelSaveRequest):
             if _pk and base != _pb.strip().rstrip('/') and not _is_local_gateway_base(_pb):
                 raise HTTPException(400, f'更换 Base URL 时必须重新填写 API Key（{pkey}）')
         if is_chat and pkey and getattr(row, 'primary', False) and model:
-            primary_ref = f'{pkey}/{model}'
+            # model 可能本来就是 provider/model 形式：anthropic 行的 model 直接取自
+            # .env 的 CLAUDE_MODEL，而那个值按约定就写成 anthropic/claude-opus-4-7。
+            # 无脑拼前缀会写出 anthropic/anthropic/claude-opus-4-7，主模型随即不可路由。
+            primary_ref = model if '/' in model else f'{pkey}/{model}'
     if not updates and not provider_updates and not primary_ref:
         raise HTTPException(400, '没有可保存的改动（key 留空表示不改）')
     if updates:
@@ -1752,11 +1786,18 @@ async def api_settings_models_save(req: ModelSaveRequest):
     note = ''
     if is_chat:
         note = _sync_openclaw_chat(provider_updates, keep_custom, primary_ref)
-        # anthropic 槽位不在 provider_updates 里（它不是自定义供应商），但同样要
-        # 落到 openclaw.json 才真正生效 —— setup.sh 写的 provider 可能已过时。
-        if any((r.slot or '').strip() == 'anthropic' for r in req.rows):
+        # anthropic / relay 两个槽位都不在 provider_updates 里（它们不是自定义供应商），
+        # 但同样要落到 openclaw.json 才真正生效 —— setup.sh 写的 provider 可能已过时。
+        # 两者共用同一个 anthropic provider，和 setup.sh 的映射保持一致。
+        _slots = {(r.slot or '').strip() for r in req.rows}
+        if 'anthropic' in _slots:
             _an = _sync_anthropic_provider(updates.get('ANTHROPIC_BASE_URL', ''),
                                           updates.get('ANTHROPIC_API_KEY', ''))
+            if _an:
+                note = f'{note}；{_an}' if note else _an
+        elif 'relay' in _slots:
+            _an = _sync_anthropic_provider(updates.get('EASEL_LLM_BASE_URL', ''),
+                                          updates.get('EASEL_LLM_API_KEY', ''))
             if _an:
                 note = f'{note}；{_an}' if note else _an
     resp = {"ok": True, "note": note}
