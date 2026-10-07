@@ -32,7 +32,6 @@ info()  { echo -e "${CYAN}[easel]${NC} $*"; }
 ok()    { echo -e "${GREEN}  ✓${NC} $*"; }
 warn()  { echo -e "${YELLOW}  ⚠${NC} $*"; }
 ask()   { if [ -t 0 ]; then printf "${CYAN}  ?${NC} %s " "$1" >&2; read -r REPLY; printf '%s' "$REPLY"; else printf ''; fi; }
-ask_secret() { if [ -t 0 ]; then printf "${CYAN}  ?${NC} %s " "$1" >&2; read -r -s REPLY; printf '\n' >&2; printf '%s' "$REPLY"; else printf ''; fi; }
 step()  { echo -e "\n${BLUE}━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━${NC}"; echo -e "${MAGENTA}  [$1]${NC} ${CYAN}$2${NC}"; echo -e "${DIM}  $3${NC}"; }
 
 run_with_progress() {
@@ -708,19 +707,6 @@ print(json.dumps(p))')"
     fi
 }
 
-# 若用户已有默认 OpenClaw 配置，复用其模型名称；密钥不会从别的 profile 复制。
-if [ -z "${CLAUDE_MODEL:-}" ] && [ -z "${ANTHROPIC_API_KEY:-}" ] && [ -t 0 ]; then
-    EXISTING_MODEL="$($OPENCLAW_BIN config get agents.defaults.model.primary 2>/dev/null || true)"
-    if [ -n "$EXISTING_MODEL" ] && [ "$EXISTING_MODEL" != "null" ]; then
-        echo "  检测到已有 OpenClaw 默认模型：$EXISTING_MODEL"
-        USE_EXISTING="$(ask '复用这个模型到 Easel？[Y/n]')"
-        case "${USE_EXISTING:-Y}" in
-            n|N) ;;
-            *) printf '\nCLAUDE_MODEL=%s\n' "$EXISTING_MODEL" >> "$PROJECT_ROOT/.env"; CLAUDE_MODEL="$EXISTING_MODEL"; ok "已复用模型配置" ;;
-        esac
-    fi
-fi
-
 # .env.example 里的 key 带的是占位符，所以「变量有值」≠「这个 key 能用」。
 # 认证判定一律走这里，别再各写各的 -n/-z：之前下面那段用 `-z ANTHROPIC_API_KEY`
 # 判「没配 Anthropic」，占位符行一留就永远不成立，整条 OpenAI 分支被跳过，
@@ -748,52 +734,16 @@ elif usable_key "${OPENAI_MAAS_API_KEY:-}" && [ -n "${OPENAI_MAAS_ENDPOINT:-}" ]
     MODEL_CONFIGURED=true
 fi
 
-# 首次安装时提供模型向导；占位值不算已配置，非交互运行则明确提示后继续。
-if [ "$MODEL_CONFIGURED" = false ] && [ -t 0 ]; then
-    echo ""
-    echo "  Easel 需要一个可用的 Agent 模型服务才能对话。"
-    echo "    1) Anthropic API"
-    echo "    2) OpenAI / OpenAI-compatible API"
-    echo "    3) 其他 Anthropic-compatible API"
-    echo "    0) 稍后配置"
-    PROVIDER_CHOICE="$(ask '请选择模型服务 [1]：')"
-    case "${PROVIDER_CHOICE:-1}" in
-        1)
-            MODEL_KEY="$(ask_secret 'Anthropic API Key（不会回显）：')"
-            if [ -n "$MODEL_KEY" ]; then
-                MODEL_NAME="$(ask '模型名 [anthropic/claude-sonnet-4-6]：')"
-                printf '\nANTHROPIC_API_KEY=%s\nCLAUDE_MODEL=%s\n' \
-                    "$MODEL_KEY" "${MODEL_NAME:-anthropic/claude-sonnet-4-6}" >> "$PROJECT_ROOT/.env"
-                ok "Anthropic Agent 配置已写入 .env"
-            fi
-            ;;
-        2)
-            MODEL_KEY="$(ask_secret 'OpenAI API Key（不会回显）：')"
-            if [ -n "$MODEL_KEY" ]; then
-                MODEL_URL="$(ask 'Base URL [https://api.openai.com/v1]：')"
-                MODEL_NAME="$(ask '模型名 [gpt-4o]：')"
-                printf '\nOPENAI_API_KEY=%s\nOPENAI_BASE_URL=%s\nOPENAI_MODEL=%s\n' \
-                    "$MODEL_KEY" "${MODEL_URL:-https://api.openai.com/v1}" \
-                    "${MODEL_NAME:-gpt-4o}" >> "$PROJECT_ROOT/.env"
-                ok "OpenAI Agent 配置已写入 .env"
-            fi
-            ;;
-        3)
-            MODEL_KEY="$(ask_secret 'API Key（不会回显）：')"
-            MODEL_URL="$(ask 'Base URL：')"
-            MODEL_NAME="$(ask '模型名：')"
-            if [ -n "$MODEL_KEY" ] && [ -n "$MODEL_URL" ] && [ -n "$MODEL_NAME" ]; then
-                printf '\nEASEL_LLM_API_KEY=%s\nEASEL_LLM_BASE_URL=%s\nCLAUDE_MODEL=%s\n' \
-                    "$MODEL_KEY" "$MODEL_URL" "$MODEL_NAME" >> "$PROJECT_ROOT/.env"
-                ok "兼容 API 的 Agent 配置已写入 .env"
-            fi
-            ;;
-        0) ;;
-        *) warn "无法识别的选择，稍后可编辑 .env 后重新运行 bash setup.sh" ;;
-    esac
-    source "$PROJECT_ROOT/.env" 2>/dev/null || true
-elif [ "$MODEL_CONFIGURED" = false ]; then
-    warn "未检测到 Agent API 配置；请编辑 .env 后重新运行 bash setup.sh"
+# 模型 API Key 不再在终端里问，改为装完在浏览器里配。
+#
+# 为什么挪走：Web 端的「设置 → 模型配置」本来就更强（能拉取模型列表、做连通性
+# 自测、保存后自动同步 openclaw 配置并重启网关），而终端向导只能盲填，还要求用户
+# 在装机时就准备好 Key，否则这一步就卡住。顺带两个收益：
+#   - API Key 不再经过 shell 变量和 `>> .env` 追加（重跑会写出重复键）；
+#   - 安装过程变成全程非交互，CI 与自动化不需要再喂 stdin。
+if [ "$MODEL_CONFIGURED" = false ]; then
+    warn_collect '模型配置' '还没有可用的 API Key，对话功能尚不可用' \
+        'easel web → 设置 → 模型配置 → 填 Key → 保存' high
 fi
 
 DEFAULT_PRIMARY_MODEL="anthropic/claude-sonnet-4-6"
@@ -1060,6 +1010,19 @@ fi
 
 write_install_report
 print_summary
+if [ "${MODEL_CONFIGURED:-false}" = false ]; then
+    echo ""
+    echo -e "  ${YELLOW}下一步：在浏览器里配置模型${NC}"
+    if [ -x "$PROJECT_ROOT/.venv/bin/easel" ]; then
+        echo -e "    1. ${CYAN}source .venv/bin/activate && easel web${NC}"
+    else
+        echo -e "    1. ${CYAN}easel web${NC}"
+    fi
+    echo -e "    2. 打开 ${CYAN}http://localhost:7860${NC}"
+    echo -e "    3. 左下角${CYAN}设置${NC} → ${CYAN}模型配置${NC} → 填 API Key → 保存"
+    echo -e "  ${DIM}保存后 Easel 会自动写好 openclaw 配置并重启网关，不用再跑 setup.sh。${NC}"
+    echo -e "  ${DIM}也可以直接编辑 .env 填 key，然后运行 easel doctor 复检。${NC}"
+fi
 echo -e "\n  ${CYAN}开始使用：${NC}"
 if [ -x "$PROJECT_ROOT/.venv/bin/easel" ]; then
     echo -e "    ${CYAN}source .venv/bin/activate${NC}    # 先激活虚拟环境，easel 命令才可用"
