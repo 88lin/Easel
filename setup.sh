@@ -77,6 +77,9 @@ echo -e "\n${DIM}  Easel 会使用独立 profile ~/.openclaw-${PROFILE}/，不�
 # ---- 1. Node.js >= 24.16 ----
 # 跟随 openclaw@latest 的引擎要求：当前 2026.9.x 需要 Node >=24.16.0 <25 || >=26.1.0
 # （注意 25.x 与 26.0 被排除）。setup 默认安装 openclaw@latest，故 Node 下限对齐到 24.16。
+# 默认先走国内镜像再回落 nodejs.org：实测同一个包 nodejs.org ~20KB/s（20 分钟都下不完），
+# 阿里云 ~590KB/s（53 秒）。EASEL_NODE_MIRROR 可覆盖，镜像目录结构需与 nodejs.org/dist 一致。
+NODE_MIRROR_DEFAULT="https://mirrors.aliyun.com/nodejs-release"
 step "1/8" "检查系统环境" "Python · Node.js · Git · FFmpeg"
 info "检查 Node.js..."
 node_version_ok() {  # $1=major $2=minor
@@ -112,12 +115,50 @@ else
         fi
     else
         NODE_TARGET="v24.21.0"
-        curl -fL --max-time 120 "https://nodejs.org/dist/${NODE_TARGET}/node-${NODE_TARGET}-linux-x64.tar.xz" -o /tmp/node24.tar.xz
-        cd /tmp && tar xf node24.tar.xz
-        cp -rf node-${NODE_TARGET}-linux-x64/bin/* /usr/local/bin/
-        cp -rf node-${NODE_TARGET}-linux-x64/lib/* /usr/local/lib/
-        rm -rf /tmp/node-${NODE_TARGET}-linux-x64 /tmp/node24.tar.xz
-        cd "$PROJECT_ROOT"
+        NODE_DIR="node-${NODE_TARGET}-linux-x64"
+        # 已有 nvm 就装进用户目录：不需要 root，也不覆盖系统 node。
+        if [ -s "${NVM_DIR:-$HOME/.nvm}/nvm.sh" ]; then
+            # shellcheck disable=SC1091
+            . "${NVM_DIR:-$HOME/.nvm}/nvm.sh"
+            NVM_NODEJS_ORG_MIRROR="${EASEL_NODE_MIRROR:-$NODE_MIRROR_DEFAULT}" \
+                nvm install "${NODE_TARGET#v}" >/dev/null 2>&1 || nvm install "${NODE_TARGET#v}"
+            # --delete-prefix 必须在版本号之前；放在后面 nvm 会静默不切换，甚至让 node 从
+            # PATH 上消失。它用来盖掉 ~/.npmrc 里与 nvm 冲突的 prefix/globalconfig 设置。
+            nvm use --delete-prefix "${NODE_TARGET#v}" >/dev/null 2>&1 \
+                || nvm use "${NODE_TARGET#v}"
+        else
+            # 原来写死 --max-time 120：这个包 30MB，nodejs.org 在国内链路常跌到 ~20KB/s，
+            # 120 秒必然超时，配合 set -euo pipefail 让整个安装从第 1 步就断掉。
+            # 改成多镜像依次重试（npm registry 那边早就有镜像回退，这里缺了）+ 放宽超时。
+            NODE_OK_DL=false
+            for base in "${EASEL_NODE_MIRROR:-$NODE_MIRROR_DEFAULT}" "https://nodejs.org/dist"; do
+                if curl -fL --connect-timeout 15 --max-time 900 --retry 2 --retry-delay 3 \
+                    "$base/${NODE_TARGET}/${NODE_DIR}.tar.xz" -o /tmp/node24.tar.xz; then
+                    NODE_OK_DL=true; break
+                fi
+                warn "从 $base 下载 Node 失败，尝试下一个源"
+            done
+            if [ "$NODE_OK_DL" != true ]; then
+                echo "Node.js ${NODE_TARGET} 下载失败。请手动安装 Node 24.16+ 后重新运行，或用" >&2
+                echo "  EASEL_NODE_MIRROR=<镜像地址> bash setup.sh   指定可用镜像。" >&2
+                exit 1
+            fi
+            cd /tmp && tar xf node24.tar.xz
+            # /usr/local 对非 root 不可写，原来的裸 cp 必然 permission denied。
+            NODE_SUDO=""
+            if [ "$(id -u)" -ne 0 ]; then
+                if command -v sudo >/dev/null 2>&1; then
+                    NODE_SUDO="sudo"
+                else
+                    echo "需要 root 才能写入 /usr/local，且未找到 sudo。请手动安装 Node 24.16+ 后重试。" >&2
+                    exit 1
+                fi
+            fi
+            $NODE_SUDO cp -rf "${NODE_DIR}/bin/." /usr/local/bin/
+            $NODE_SUDO cp -rf "${NODE_DIR}/lib/." /usr/local/lib/
+            rm -rf "/tmp/${NODE_DIR}" /tmp/node24.tar.xz
+            cd "$PROJECT_ROOT"
+        fi
     fi
     ok "Node.js $(node -v)"
 fi
@@ -396,7 +437,11 @@ oc_write_anthropic() {
     local seed
     seed="$(A_BASE_URL="$1" A_API_KEY="$2" A_HDR="${3:-}" A_VER="${4:-}" python3 -c '
 import json, os
-p = {"baseUrl": os.environ["A_BASE_URL"], "apiKey": os.environ["A_API_KEY"], "models": []}
+# api 必须显式写死：不写时 OpenClaw 2026.2.x 会把这个 provider 当成 openai-responses，
+# 请求打到 /responses，上游只报「does not support the responses interface」，而 gateway
+# 把它当正常回复塞进 choices[0].message.content → Web 对话静默显示「（无输出）」。
+p = {"baseUrl": os.environ["A_BASE_URL"], "apiKey": os.environ["A_API_KEY"],
+     "api": "anthropic-messages", "models": []}
 hdr = os.environ.get("A_HDR"); ver = os.environ.get("A_VER")
 if hdr or ver:
     h = {}
@@ -404,7 +449,17 @@ if hdr or ver:
     if ver: h["anthropic-version"] = ver
     p["headers"] = h
 print(json.dumps(p))')"
-    $OC config set models.providers.anthropic "$seed" --json 2>&1 | sed '/^No change$/d'
+    # 2026.9.x 起，--json 整块写入若会删掉 provider 下已存在的子键会被直接拒绝
+    # （"Refusing to replace ...; it would remove existing entries: timeoutSeconds"）。
+    # 而 timeoutSeconds 正是本脚本后面自己设的 —— 于是首次安装能过、第二次重跑必失败，
+    # setup.sh 变成不可重入。这里的语义本来就是「有意整块替换」（顺带清掉旧的
+    # Cookie/X-Adapter-* 残留 header），所以显式声明 --replace；老版本没这个标志，
+    # 探测不到就沿用裸 --json（那些版本也不会拒绝替换）。
+    local replace_flag=""
+    if $OC config set --help 2>&1 | grep -q -- '--replace'; then
+        replace_flag="--replace"
+    fi
+    $OC config set models.providers.anthropic "$seed" --json $replace_flag 2>&1 | sed '/^No change$/d'
 }
 
 # 若用户已有默认 OpenClaw 配置，复用其模型名称；密钥不会从别的 profile 复制。
@@ -677,12 +732,14 @@ if [ -n "$EMBEDDING_API_KEY" ] && [ -n "$EMBEDDING_BASE_URL" ] && [ -n "$EMBEDDI
     fi
 else
     # Deliberate FTS-only mode: never fall back to the chat endpoint for embeddings.
-    # 新 schema 用 memory.search.enabled=false 关闭向量检索；老 schema 用 provider=none。
-    if $OC config set memory.search.enabled false --strict-json >/dev/null 2>&1; then
-        :
-    else
-        $OC config set agents.defaults.memorySearch.provider none 2>&1 | sed '/^No change$/d'
-    fi
+    # 关闭向量检索的键随 OpenClaw 版本变过两次：2026.9.x+ 是 memory.search.enabled，
+    # 更早是 agents.defaults.memorySearch.enabled。原来的 memorySearch.provider=none 在
+    # 2026.2.x 上是无效枚举（只认 local/openai），报 Invalid input 并退出 1，配合
+    # set -euo pipefail 会直接中断整个安装 —— 「关闭」不能用 provider 表达。
+    # 末尾 || true 兜住未来再次变更 schema 的情况：关不掉也不该让安装失败。
+    $OC config set memory.search.enabled false --strict-json >/dev/null 2>&1 \
+        || $OC config set agents.defaults.memorySearch.enabled false --strict-json >/dev/null 2>&1 \
+        || true
     if [ -n "$EMBEDDING_API_KEY$EMBEDDING_BASE_URL$EMBEDDING_MODEL" ]; then
         warn "向量 API 配置不完整，已关闭向量检索；需要同时设置 EASEL_EMBEDDING_API_KEY、EASEL_EMBEDDING_BASE_URL、EASEL_EMBEDDING_MODEL"
     else
@@ -711,11 +768,18 @@ $OC config set gateway.http.endpoints.chatCompletions.enabled true --strict-json
 
 # Refuse to start with a config rejected by the installed OpenClaw version.
 # This catches schema changes early instead of producing opaque Gateway errors.
-if ! $OC config validate; then
-    echo "OpenClaw 配置校验失败：请检查上方报错，并确认使用受支持的 OpenClaw 版本。" >&2
-    exit 1
+# `config validate` 直到 2026.3 才有；2026.2.x 只有 get/set/unset，直接调会报
+# "too many arguments for 'config'" 并让安装在最后一步前功尽弃。老版本上跳过即可 ——
+# 上面每个 config set 都会各自校验，schema 问题照样会当场暴露。
+if $OC config --help 2>&1 | grep -qE '^\s+validate\b'; then
+    if ! $OC config validate; then
+        echo "OpenClaw 配置校验失败：请检查上方报错，并确认使用受支持的 OpenClaw 版本。" >&2
+        exit 1
+    fi
+    ok "OpenClaw 配置校验通过"
+else
+    warn "当前 OpenClaw（$($OPENCLAW_BIN --version 2>&1 | head -1)）不支持 config validate，跳过整体校验"
 fi
-ok "OpenClaw 配置校验通过"
 
 # ---- 11. 启动 gateway ----
 step "8/8" "启动并验证" "配置校验 · Chromium · Gateway health"
