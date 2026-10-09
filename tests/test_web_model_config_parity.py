@@ -162,3 +162,61 @@ def test_gateway_restart_takes_no_parameters() -> None:
     # 命令里只许出现字面量与脚本路径，不得有外部输入拼接
     assert "'restart'" in src or '"restart"' in src
     assert "req." not in src and "request" not in src.lower().replace("subprocess", "")
+
+
+# ── role：哪一行在当主，不能写死 ──────────────────────────────────────
+
+@pytest.mark.parametrize("env_key,slot", [
+    ("ANTHROPIC_API_KEY", "anthropic"),
+    ("EASEL_LLM_API_KEY", "relay"),
+])
+def test_primary_row_reports_main_role(env_key, slot, tmp_path, monkeypatch, oc_cfg):
+    """primary 指向该行时必须显示「主」。
+
+    anthropic / relay 两行原先把 role 写死成「备」，而 openai 行是从 primary 算的。
+    于是主模型明明是 anthropic/... 面板也显示备用 —— 用户据此判断「哪个在生效」会判错。
+    """
+    envf = tmp_path / ".env"
+    envf.write_text(f"{env_key}=dummy-value-for-unit-test\n"
+                    "EASEL_LLM_BASE_URL=https://example.test/v1\n"
+                    "CLAUDE_MODEL=anthropic/claude-opus-4-7\n", encoding="utf-8")
+    monkeypatch.setattr(app, "ENV_FILE", envf)
+    oc_cfg.write_text(json.dumps({
+        "agents": {"defaults": {"model": {"primary": "anthropic/claude-opus-4-7"}}},
+        "models": {"providers": {}},
+    }), encoding="utf-8")
+
+    rows = {r["slot"]: r for r in app._model_channels()["channels"]["chat"]["rows"]}
+    assert slot in rows, f"{slot} 行应当出现：{list(rows)}"
+    assert rows[slot]["role"] == "主", f"{slot} 是主模型却显示 {rows[slot]['role']}"
+
+
+def test_non_primary_row_reports_backup_role(tmp_path, monkeypatch, oc_cfg):
+    """反向用例：primary 指向别处时不能误报「主」。"""
+    envf = tmp_path / ".env"
+    envf.write_text("EASEL_LLM_API_KEY=dummy-value-for-unit-test\n"
+                    "EASEL_LLM_BASE_URL=https://example.test/v1\n"
+                    "CLAUDE_MODEL=anthropic/claude-opus-4-7\n", encoding="utf-8")
+    monkeypatch.setattr(app, "ENV_FILE", envf)
+    oc_cfg.write_text(json.dumps({
+        "agents": {"defaults": {"model": {"primary": "openai/gpt-5.5"}}},
+        "models": {"providers": {}},
+    }), encoding="utf-8")
+
+    rows = {r["slot"]: r for r in app._model_channels()["channels"]["chat"]["rows"]}
+    assert rows["relay"]["role"] == "备", "primary 指向 openai 时 relay 不该显示主"
+
+
+def test_bare_model_name_also_matches_primary(tmp_path, monkeypatch, oc_cfg):
+    """CLAUDE_MODEL 写成裸模型名（不带 provider 前缀）时也要能对上。"""
+    envf = tmp_path / ".env"
+    envf.write_text("ANTHROPIC_API_KEY=dummy-value-for-unit-test\n"
+                    "CLAUDE_MODEL=claude-opus-4-7\n", encoding="utf-8")
+    monkeypatch.setattr(app, "ENV_FILE", envf)
+    oc_cfg.write_text(json.dumps({
+        "agents": {"defaults": {"model": {"primary": "anthropic/claude-opus-4-7"}}},
+        "models": {"providers": {}},
+    }), encoding="utf-8")
+
+    rows = {r["slot"]: r for r in app._model_channels()["channels"]["chat"]["rows"]}
+    assert rows["anthropic"]["role"] == "主"

@@ -1418,6 +1418,18 @@ def _model_channels() -> dict:
             "role": "主" if primary.startswith("openai/") else "备",
             "result": "已配置" if ok_key else "缺 key",
         })
+    def _is_primary(pkey: str, model: str) -> bool:
+        """这一行是不是当前的主模型。
+
+        不能像 openai 行那样只比 provider 前缀：anthropic 与 relay 两个槽位现在都落在
+        同一个 anthropic provider 上（见 _sync_anthropic_provider），只比前缀会让两行
+        同时显示「主」。所以连模型一起比；model 本身可能已是 provider/model 形式
+        （CLAUDE_MODEL 按约定就这么写），两种写法都要认。
+        """
+        if not primary or not model:
+            return False
+        return primary == model or primary == f"{pkey}/{model}"
+
     ab = (env.get("ANTHROPIC_BASE_URL") or "").strip()
     ak = (env.get("ANTHROPIC_API_KEY") or "").strip()
     ak_ok = _is_set(ak)
@@ -1426,7 +1438,10 @@ def _model_channels() -> dict:
             "slot": "anthropic", "order": len(chat_rows) + 1, "name": "anthropic", "sub": "官方直连",
             "type": "anthropic", "model": (env.get("CLAUDE_MODEL") or "claude-sonnet-4-6").strip(),
             "baseUrl": ab or "官方", "keyMasked": _mask_key(ak if ak_ok else ""),
-            "role": "备", "result": "已配置" if ak_ok else "缺 key",
+            # 原来写死「备」：主模型明明是 anthropic/... 时面板也显示备用，和 openai 行
+            # 的处理不一致，用户据此判断「哪个在生效」会判错。
+            "role": "主" if _is_primary("anthropic", (env.get("CLAUDE_MODEL") or "").strip()) else "备",
+            "result": "已配置" if ak_ok else "缺 key",
         })
     lb = (env.get("EASEL_LLM_BASE_URL") or "").strip()
     lk = (env.get("EASEL_LLM_API_KEY") or "").strip()
@@ -1436,7 +1451,9 @@ def _model_channels() -> dict:
             "slot": "relay", "order": len(chat_rows) + 1, "name": "relay", "sub": "中转站",
             "type": "openai", "model": (env.get("CLAUDE_MODEL") or "deepseek-chat").strip(),
             "baseUrl": lb or "（未配置）", "keyMasked": _mask_key(lk if lk_ok else ""),
-            "role": "备", "result": "已配置" if lk_ok else "缺 key",
+            # relay 槽位落的也是 anthropic provider（与 setup.sh 的 EASEL_LLM_* 分支一致）
+            "role": "主" if _is_primary("anthropic", (env.get("CLAUDE_MODEL") or "").strip()) else "备",
+            "result": "已配置" if lk_ok else "缺 key",
         })
 
     custom_rows = []

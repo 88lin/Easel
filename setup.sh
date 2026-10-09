@@ -105,8 +105,12 @@ emit_action() {
     case "$key" in
         *[Kk]ey*|*[Tt]oken*|*[Ss]ecret*|*[Pp]assword*|*headers*) value='<redacted>' ;;
     esac
+    # value 侧只按「真的像凭据」的形态匹配，不能用裸 token 子串 ——
+    # provider 的 models JSON 里有 maxTokens，会被连带遮掉，而那是该看见的信息
+    # （contextWindow / maxTokens 没声明会让部分网关直接 400，正是要能核对的东西）。
     case "$value" in
-        *apiKey*|*api_key*|*apikey*|*Authorization*|*Bearer*|*[Tt]oken*|*[Ss]ecret*)
+        *'"apiKey"'*|*apiKey=*|*api_key*|*apikey=*|*Authorization*|*Bearer\ *|\
+        *'"token"'*|*token=*|*[Ss]ecret*|*[Pp]assword*)
             value='<redacted>' ;;
     esac
     printf '{"action":"%s","key":"%s","value":"%s"}\n' \
@@ -582,9 +586,10 @@ if [ "$(id -u)" -eq 0 ]; then
     warn "当前以 root 安装；生产服务器建议使用虚拟环境"
 fi
 run_step 'pip install' run_with_progress "Python 依赖安装" python3 -m pip "${PIP_ARGS[@]}"
-if ! command -v easel >/dev/null 2>&1; then
-    echo "easel 命令未找到；请检查 Python 环境和 PATH。" >&2
-    exit 1
+# check 模式下 pip 安装被跳过，easel 自然不会出现 —— 这里不能当成失败，否则 check
+# 模式必然在第 5 步中断，整个「不下载依赖也能验证安装逻辑」的用途就没了。
+if [ "$SETUP_MODE" != check ] && ! command -v easel >/dev/null 2>&1; then
+    fatal "easel 命令未找到；请检查 Python 环境和 PATH（重试：bash setup.sh）"
 fi
 ok "[2/2] easel 命令可用"
 
@@ -989,7 +994,11 @@ if ! run_step 'gateway start' bash "$PROJECT_ROOT/scripts/gateway.sh" start; the
 fi
 
 # Playwright is a runtime dependency for browser login/publishing.
-if python3 -c 'import playwright' >/dev/null 2>&1; then
+if [ "$SETUP_MODE" = check ]; then
+    # check 模式跳过了 pip 安装，playwright 模块自然不在。这里不能当成失败，否则
+    # check 模式必然在最后一步中断 —— 与上面 easel 命令那处同理。
+    emit_action run_step 'playwright chromium' 'python3 -m playwright install chromium'
+elif python3 -c 'import playwright' >/dev/null 2>&1; then
     # 降级而非中断：这是个 ~300MB 的下载，弱网下失败很常见，而它只影响浏览器登录/发布。
     CHROMIUM_OK=true
     run_step 'playwright chromium' python3 -m playwright install chromium || CHROMIUM_OK=false
