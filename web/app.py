@@ -1633,6 +1633,10 @@ def _sync_openclaw_chat(provider_updates: dict[str, dict], keep_custom: set[str]
                 if models[0].get('id') != model:
                     models[0]['id'] = model
                     changed = True
+                model_name = models[0].get('name')
+                if not isinstance(model_name, str) or not model_name.strip():
+                    models[0]['name'] = model
+                    changed = True
                 prov['models'] = models
         if primary_ref:
             ref = data.setdefault('agents', {}).setdefault('defaults', {}).setdefault('model', {})
