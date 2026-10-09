@@ -54,6 +54,8 @@ export default function App() {
   const [showRecommend, setShowRecommend] = useState(false);
   const [showWizard, setShowWizard] = useState(false);
   const [settingsOpen, setSettingsOpen] = useState(false);
+  // 装完还没配模型时，首开要把用户直接带到模型设置页（安装脚本不再在终端问 Key）
+  const [needModelSetup, setNeedModelSetup] = useState(false);
 
   // 对话里的「产物路径 → 内容库」跳转：linkifyOutputs 把目录路径生成为
   // `#/outputs/<路径>` 锚点，这里监听 hashchange 切页并带上下文，随后清掉 hash
@@ -160,10 +162,23 @@ export default function App() {
 
   // Fetch status on mount — 真实反映 gateway 状态 + 首次引导检测
   useEffect(() => {
-    fetchStatus()
-      .then((data) => {
+    // 先问 bootstrap：模型没配好时，画像推荐弹窗要让位 —— 一次只问用户一件事，
+    // 而且画像配得再好，没有模型也对话不了。
+    const bootstrap = fetch('./api/settings/bootstrap')
+      .then((r) => (r.ok ? r.json() : null))
+      .catch(() => null);
+
+    Promise.all([fetchStatus(), bootstrap])
+      .then(([data, boot]) => {
         setPersonas(data.personas || []);
         setGatewayStatus(data.gateway ? 'connected' : 'disconnected');
+        const unconfigured = !!boot && boot.modelConfigured === false;
+        if (unconfigured) {
+          // 直接打开设置面板（它默认就停在「模型配置 · 对话」页）
+          setNeedModelSetup(true);
+          setSettingsOpen(true);
+          return;
+        }
         // 首次使用：没有任何个性化画像 且 未看过引导 → 推荐配置
         if ((data.personas || []).length === 0 && !onboardingSeen()) {
           setShowRecommend(true);
@@ -817,7 +832,14 @@ export default function App() {
       )}
 
       {/* 设置（统一入口：模型配置 · 环境安装 · 更多设置） */}
-      {settingsOpen && <SettingsPanel onClose={() => setSettingsOpen(false)} />}
+      {settingsOpen && (
+        <SettingsPanel
+          banner={needModelSetup
+            ? '还没有配置模型 —— 填一个 API Key 才能开始对话。保存后会自动同步配置并重启网关。'
+            : ''}
+          onClose={() => { setSettingsOpen(false); setNeedModelSetup(false); }}
+        />
+      )}
     </div>
   );
 }

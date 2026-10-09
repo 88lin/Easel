@@ -156,9 +156,17 @@ export default function OutputsPage({ jumpPath, onJumpHandled }: OutputsPageProp
   useEffect(() => {
     if (!jumpPath || roots.length === 0) return;
     const parts = jumpPath.split('/').filter(Boolean);
-    const parent = parts.slice(0, -1);
-    const node = resolvePath(roots, parent).find(n => n.name === parts[parts.length - 1]);
-    setStack(node?.type === 'file' ? parent : parts);
+    const parent: string[] = [];
+    let nodes = roots;
+    let node: OutputNode | undefined;
+    for (const part of parts) {
+      node = nodes.find(candidate => candidate.name === part);
+      if (!node || node.type !== 'dir') break;
+      parent.push(part);
+      nodes = node.children || [];
+    }
+    if (node?.path !== parts.join('/')) node = undefined;
+    setStack(parent);
     setFilter('all');
     if (node?.type === 'file') void open(node);
     else setSelected(null);

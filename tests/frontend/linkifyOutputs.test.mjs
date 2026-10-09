@@ -40,6 +40,15 @@ test('external URLs, commands, converted links and traversal targets remain unch
     '`cat outputs/a.md`',
     '[已处理](/api/media/a.md)',
     '[非法](outputs/../secret.md)',
+    '[非法](outputs/%2e%2e/secret.md)',
+    '[非法](outputs/a/./report.md)',
+    '[损坏](outputs/%ZZ.md)',
     '[损坏](outputs/\uD800.md)',
   ]) assert.equal(linkifyOutputs(input), input);
+});
+
+test('Windows paths and encoded file names resolve without corrupting their destination', () => {
+  assert.equal(linkifyOutputs('[报告](C:\\Easel\\outputs\\demo\\report.md)'), '[报告](#/outputs/demo/report.md)');
+  assert.equal(linkifyOutputs('[报告](outputs/demo/a%20b.md)'), '[报告](#/outputs/demo/a%20b.md)');
+  assert.equal(linkifyOutputs('[目录](outputs/demo/)'), '[目录](#/outputs/demo)');
 });
