@@ -72,6 +72,7 @@ export default function App() {
       window.history.replaceState(null, '', window.location.pathname + window.location.search);
     };
     window.addEventListener('hashchange', onHash);
+    onHash();
     return () => window.removeEventListener('hashchange', onHash);
   }, []);
   const clearOutputsJump = useCallback(() => setOutputsJump(''), []);
