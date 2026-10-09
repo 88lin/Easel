@@ -353,6 +353,26 @@ def _proxy(platform: str, explicit: str | None, disable: bool | None) -> str | N
     return os.environ.get("https_proxy") or os.environ.get("http_proxy") or os.environ.get("EASEL_PROXY")
 
 
+def _platform_logged_in(page, cfg: dict) -> bool:
+    qr_selector = cfg.get("login_qr_selector")
+    ok_selector = cfg.get("login_ok_selector")
+    if not qr_selector or not ok_selector:
+        return True
+    for attempt in range(3):
+        try:
+            for frame in page.frames:
+                if any(element.is_visible() for element in frame.query_selector_all(qr_selector)):
+                    return False
+            return any(element.is_visible() for element in page.query_selector_all(ok_selector))
+        except Exception:
+            if attempt < 2:
+                try:
+                    page.wait_for_timeout(500)
+                except Exception:
+                    return False
+    return False
+
+
 def _scrape(platform: str, headed: bool, base: str | None, proxy: str | None) -> dict:
     from playwright.sync_api import sync_playwright
     cfg = PLATFORMS[platform]
@@ -410,16 +430,10 @@ def _scrape(platform: str, headed: bool, base: str | None, proxy: str | None) ->
                 if re.search(r"(passport|/login)", page.url or "") or \
                    page.query_selector('button:has-text("扫码登录"), [class*="login-btn"]'):
                     r["logged_in"] = False
-                # 平台级登录墙检测：有配置的（如抖音）必须「无二维码 且 有登录后锚点」才算已登录。
-                # 只靠 URL/按钮文本兜不住原地弹 iframe 的登录墙（抖音实测：会话过期 URL 不变）。
-                lqr = cfg.get("login_qr_selector")
-                lok = cfg.get("login_ok_selector")
-                if lqr and lok and r["logged_in"]:
-                    try:
-                        if page.query_selector(lqr) or not page.query_selector(lok):
-                            r["logged_in"] = False
-                    except Exception:
-                        pass
+                if r["logged_in"]:
+                    r["logged_in"] = _platform_logged_in(page, cfg)
+                if cfg.get("login_ok_selector") and not r["logged_in"]:
+                    return r
                 r["followers"] = num_by_label(lines, ov["followers"], d)
                 r["likes"] = num_by_label(lines, ov["likes"], d)
                 r["following"] = num_by_label(lines, ov.get("following", []), d)
