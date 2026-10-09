@@ -761,22 +761,23 @@ export default function App() {
   const handlePersonaChange = useCallback((persona: string) => {
     setSelectedPersona(persona);
     setCurrentPage('chat');
-    // 修复：选/切画像不再新建空会话丢上下文。就地把当前会话的画像设为新选的、
-    // 保留会话 id 与历史（画像只是每轮的系统前缀，中途换安全）。想开新线程用「New Chat」。
     const cur = sessionsRef.current.find((s) => s.id === activeSessionId);
-    if (cur) {
+    if (cur && cur.messages.length === 0) {
       setSessions((prev) => {
         const updated = prev.map((s) =>
           s.id === activeSessionId ? { ...s, persona: persona || undefined } : s);
         saveSessions(updated);
         return updated;
       });
-    } else {
-      // 无活跃会话（极少）才新建
-      const ns = createSession(persona || undefined);
-      setSessions((prev) => { const u = [ns, ...prev]; saveSessions(u); return u; });
-      setActiveSessionId(ns.id);
+      return;
     }
+    const newSession = createSession(persona || undefined);
+    setSessions((prev) => {
+      const updated = [newSession, ...prev];
+      saveSessions(updated);
+      return updated;
+    });
+    setActiveSessionId(newSession.id);
   }, [activeSessionId]);
 
   return (
@@ -790,7 +791,6 @@ export default function App() {
         onNewProfile={() => setShowWizard(true)}
         sessions={sessions}
         activeSessionId={activeSessionId}
-        activeSessionHasMessages={activeSession ? activeSession.messages.length > 0 : false}
         onSessionSelect={handleSessionSelect}
         onSessionDelete={handleSessionDelete}
         onSessionRename={handleSessionRename}
