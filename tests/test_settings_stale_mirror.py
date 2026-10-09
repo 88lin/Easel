@@ -98,3 +98,29 @@ def test_anthropic_default_url_is_authoritative_when_not_explicitly_set(sandbox)
     mirror = json.loads(config_path.read_text())["models"]["providers"]["anthropic"]
     assert mirror["baseUrl"] == "https://api.anthropic.com"
     assert mirror["apiKey"] == "sk-env-test"
+
+
+def test_openai_local_gateway_keeps_its_own_authentication_key(sandbox):
+    client, env_path, config_path = sandbox
+    seed(env_path, config_path, "openai", mirror_base="http://127.0.0.1:8890/v1",
+         mirror_key="sk-gateway-test")
+    response = client.post("/api/settings/models/save", json={"rows": [
+        {"slot": "openai", "model": "new-model", "baseUrl": "https://current.example/v1"},
+    ]})
+    assert response.status_code == 200, response.text
+    mirror = json.loads(config_path.read_text())["models"]["providers"]["openai"]
+    assert mirror["baseUrl"] == "http://127.0.0.1:8890/v1"
+    assert mirror["apiKey"] == "sk-gateway-test"
+
+
+@pytest.mark.parametrize("slot", ["anthropic", "relay"])
+def test_mirror_only_credentials_keep_their_url_on_model_only_save(sandbox, slot):
+    client, env_path, config_path = sandbox
+    provider = seed(env_path, config_path, slot, env_key="", base="")
+    response = client.post("/api/settings/models/save", json={"rows": [
+        {"slot": slot, "model": "new-model", "key": ""},
+    ]})
+    assert response.status_code == 200, response.text
+    mirror = json.loads(config_path.read_text())["models"]["providers"][provider]
+    assert mirror["baseUrl"] == "https://old.example/v1"
+    assert mirror["apiKey"] == "sk-mirror-test"

@@ -1881,7 +1881,8 @@ async def api_settings_models_save(req: ModelSaveRequest):
                 _pb = _pb.strip().rstrip('/')
             if _pk and base != _pb and not _is_local_gateway_base(_pb):
                 raise HTTPException(400, f'更换 Base URL 时必须重新填写 API Key（{pkey}）')
-        if is_chat and slot == 'openai' and not key and _is_set(_cur_env.get('OPENAI_API_KEY')):
+        if is_chat and slot == 'openai' and not key and _is_set(_cur_env.get('OPENAI_API_KEY')) \
+                and not _is_local_gateway_base(_cur_prov.get('openai', ('', ''))[0]):
             provider_updates['openai']['key'] = _cur_env['OPENAI_API_KEY'].strip()
         if is_chat and pkey and getattr(row, 'primary', False) and model:
             # model 可能本来就是 provider/model 形式：anthropic 行的 model 直接取自
@@ -1901,7 +1902,9 @@ async def api_settings_models_save(req: ModelSaveRequest):
         _slots = {(r.slot or '').strip() for r in req.rows}
         if 'anthropic' in _slots:
             _an = _sync_anthropic_provider(
-                updates.get('ANTHROPIC_BASE_URL', _cur_env.get('ANTHROPIC_BASE_URL', '')),
+                updates.get('ANTHROPIC_BASE_URL', _cur_env.get('ANTHROPIC_BASE_URL', ''))
+                or ('' if _is_set(_cur_env.get('ANTHROPIC_API_KEY'))
+                    else _cur_prov.get('anthropic', ('', ''))[0]),
                 updates.get('ANTHROPIC_API_KEY',
                             _cur_env.get('ANTHROPIC_API_KEY', '')
                             if _is_set(_cur_env.get('ANTHROPIC_API_KEY')) else ''))
@@ -1909,7 +1912,9 @@ async def api_settings_models_save(req: ModelSaveRequest):
                 note = f'{note}；{_an}' if note else _an
         elif 'relay' in _slots:
             _an = _sync_anthropic_provider(
-                updates.get('EASEL_LLM_BASE_URL', _cur_env.get('EASEL_LLM_BASE_URL', '')),
+                updates.get('EASEL_LLM_BASE_URL', _cur_env.get('EASEL_LLM_BASE_URL', ''))
+                or ('' if _is_set(_cur_env.get('EASEL_LLM_API_KEY'))
+                    else _cur_prov.get('anthropic', ('', ''))[0]),
                 updates.get('EASEL_LLM_API_KEY',
                             _cur_env.get('EASEL_LLM_API_KEY', '')
                             if _is_set(_cur_env.get('EASEL_LLM_API_KEY')) else ''))
