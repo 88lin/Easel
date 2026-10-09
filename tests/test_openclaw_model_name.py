@@ -1,10 +1,4 @@
-"""保存自定义供应商时必须给模型条目写 name。
-
-背景：面板保存走 _sync_openclaw_chat，原先只写 models[0].id。OpenClaw 的配置 schema 要求
-每个模型条目有非空 name，缺了会让**网关下次启动直接拒绝加载配置**
-（models.providers.<p>.models[0].name: Invalid input: expected string, received undefined），
-也就是"面板显示保存成功、下次重启整个对话通道起不来"。
-"""
+"""Saving a provider must preserve or supply a nonempty model display name."""
 import json
 import sys
 from pathlib import Path
@@ -23,53 +17,53 @@ import web.app as web
 def client(tmp_path, monkeypatch):
     monkeypatch.setenv("EASEL_OPENCLAW_STATE_DIR", str(tmp_path))
     monkeypatch.setattr(web, "ENV_FILE", tmp_path / ".env")
-    oc = tmp_path / "openclaw.json"
-    oc.write_text(json.dumps({
+    config_path = tmp_path / "openclaw.json"
+    config_path.write_text(json.dumps({
         "models": {"providers": {"openai": {"api": "openai-completions"}}},
         "agents": {"defaults": {"model": {"primary": "openai/gpt-x"}}},
     }), encoding="utf-8")
     monkeypatch.setattr(web, "_read_env", lambda: {})
     local = "http://127.0.0.1:7860"
-    c = TestClient(web.app, base_url=local, client=("127.0.0.1", 51234),
-                   headers={"Origin": local})
-    return c, oc
+    test_client = TestClient(web.app, base_url=local, client=("127.0.0.1", 51234),
+                             headers={"Origin": local})
+    return test_client, config_path
 
 
-def _row(**kw):
-    base = {"slot": "custom", "name": "newrelay", "model": "deepseek-v3",
-            "baseUrl": "https://relay.example.com/v1", "key": "sk-test"}
-    base.update(kw)
-    return base
+def _row(**overrides):
+    row = {"slot": "custom", "name": "newrelay", "model": "deepseek-v3",
+           "baseUrl": "https://relay.example.com/v1", "key": "sk-test"}
+    row.update(overrides)
+    return row
 
 
-def _providers(oc):
-    return json.loads(oc.read_text(encoding="utf-8"))["models"]["providers"]
+def _providers(config_path):
+    return json.loads(config_path.read_text(encoding="utf-8"))["models"]["providers"]
 
 
 def test_new_custom_provider_gets_model_name(client):
-    """新增自定义供应商：模型条目要带上非空 name（缺了网关下次启动会拒绝加载）。"""
-    c, oc = client
-    r = c.post("/api/settings/models/save", json={"channel": "chat", "rows": [_row()]})
-    assert r.status_code == 200, r.text
-    entry = _providers(oc)["newrelay"]["models"][0]
+    test_client, config_path = client
+    response = test_client.post("/api/settings/models/save",
+                                json={"channel": "chat", "rows": [_row()]})
+    assert response.status_code == 200, response.text
+    entry = _providers(config_path)["newrelay"]["models"][0]
     assert entry["id"] == "deepseek-v3"
-    assert isinstance(entry.get("name"), str) and entry["name"].strip()
+    assert entry["name"] == "deepseek-v3"
 
 
 @pytest.mark.parametrize("model_name", ["DeepSeek V3 (relay)", "", "   ", None, 123, {"bad": "name"}])
 def test_existing_model_name_is_kept_or_repaired(client, model_name):
-    """已经有 name 的（例如 OpenClaw 自己探测写下的）不能被覆盖。"""
-    c, oc = client
-    cfg = json.loads(oc.read_text(encoding="utf-8"))
-    cfg["models"]["providers"]["newrelay"] = {
+    test_client, config_path = client
+    config = json.loads(config_path.read_text(encoding="utf-8"))
+    config["models"]["providers"]["newrelay"] = {
         "baseUrl": "https://relay.example.com/v1",
         "apiKey": "sk-old",
         "models": [{"id": "deepseek-v3", "name": model_name}],
     }
-    oc.write_text(json.dumps(cfg), encoding="utf-8")
-    r = c.post("/api/settings/models/save", json={"channel": "chat", "rows": [_row(key="")]})
-    assert r.status_code == 200, r.text
-    provider = _providers(oc)["newrelay"]
+    config_path.write_text(json.dumps(config), encoding="utf-8")
+    response = test_client.post("/api/settings/models/save",
+                                json={"channel": "chat", "rows": [_row(key="")]})
+    assert response.status_code == 200, response.text
+    provider = _providers(config_path)["newrelay"]
     expected = model_name if isinstance(model_name, str) and model_name.strip() else "deepseek-v3"
     assert provider["models"][0]["name"] == expected
     assert provider["apiKey"] == "sk-old"
