@@ -170,7 +170,7 @@ export function deletePersona(name: string): Promise<{ ok: boolean; deleted: str
 
 // ---- 热点雷达 ----
 export interface TrendItem { title: string; hot: string; url: string; }
-export interface TrendGroup { platform: string; label: string; items: TrendItem[]; }
+export interface TrendGroup { platform: string; label: string; items: TrendItem[]; ok?: boolean; }
 export function fetchTrends(platforms: string, limit = 12): Promise<{ trends: TrendGroup[]; updated: number }> {
   return request(`/api/trends?platforms=${encodeURIComponent(platforms)}&limit=${limit}`);
 }

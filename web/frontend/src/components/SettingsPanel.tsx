@@ -11,7 +11,11 @@ import {
 import type { EnvTool, ModelRow, SelftestResult, LocalAgentInfo } from '../lib/api';
 import { IconSlidersHorizontal, IconPackage, IconEllipsis } from './settingsIcons';
 
-interface Props { onClose: () => void; }
+interface Props {
+  onClose: () => void;
+  /** 非空时在面板顶部显示一条提示条。首开未配置模型时由 App 传入。 */
+  banner?: string;
+}
 
 type Sec = 'model' | 'env' | 'more';
 type Chan = 'chat' | 'transcribe' | 'speech' | 'image' | 'video' | 'music';
@@ -54,7 +58,7 @@ const hhmm = (ts: number) => {
 };
 
 /** 设置（统一入口）：竖＝功能分类（模型配置 / 环境安装 / 更多设置），横＝模型六通道。 */
-export default function SettingsPanel({ onClose }: Props) {
+export default function SettingsPanel({ onClose, banner = '' }: Props) {
   const [sec, setSec] = useState<Sec>('model');
   const [chan, setChan] = useState<Chan>('chat');
 
@@ -426,9 +430,19 @@ export default function SettingsPanel({ onClose }: Props) {
               {isCustom && ed && ed.base ? (
                 <span
                   className="proto-trigger"
+                  role="button"
+                  tabIndex={0}
+                  aria-haspopup="listbox"
+                  aria-expanded={!!protoDd[i]}
                   ref={(el) => { protoRefs.current[i] = el; }}
                   title="上游协议：中转站是 OpenAI 兼容格式选 openai；原生 Anthropic 格式（/v1/messages）选 anthropic"
                   onClick={() => setProtoDd((s) => ({ ...s, [i]: !s[i] }))}
+                  onKeyDown={(event) => {
+                    if (event.key === 'Enter' || event.key === ' ') {
+                      event.preventDefault();
+                      setProtoDd((state) => ({ ...state, [i]: !state[i] }));
+                    }
+                  }}
                 >
                   <span className="proto-label">{r.protocol === 'anthropic' ? 'anthropic' : 'openai'}</span>
                   {protoDd[i] && (
@@ -445,6 +459,7 @@ export default function SettingsPanel({ onClose }: Props) {
                           return next;
                         });
                         setProtoDd((s) => ({ ...s, [i]: false }));
+                        setOpenDd((state) => ({ ...state, [i]: false }));
                       }}
                       onClose={() => setProtoDd((s) => ({ ...s, [i]: false }))}
                     />
@@ -609,6 +624,19 @@ export default function SettingsPanel({ onClose }: Props) {
             <button className="settings-close" onClick={onClose} title="关闭（Esc）">✕</button>
           </div>
         </div>
+
+        {banner && (
+          <div
+            role="status"
+            style={{
+              margin: '0 16px 12px', padding: '10px 12px', borderRadius: 8,
+              background: 'var(--warn-bg, #fff7ed)', color: 'var(--warn-fg, #9a3412)',
+              border: '1px solid var(--warn-border, #fed7aa)', fontSize: 13, lineHeight: 1.5,
+            }}
+          >
+            {banner}
+          </div>
+        )}
 
         <div className="settings-body">
           <nav className="settings-nav">
@@ -887,7 +915,9 @@ function OptionsDropdown({ anchor, items, current, emptyHint, onPull, pulling, o
 
   if (!pos) return null;
   return createPortal(
-    <div ref={ref} className="model-dd" role="listbox" style={{ position: 'fixed', top: pos.top, left: pos.left, width: pos.width }}>
+    <div ref={ref} className="model-dd" role="listbox" onClick={(event) => event.stopPropagation()}
+      onKeyDown={(event) => event.stopPropagation()}
+      style={{ position: 'fixed', top: pos.top, left: pos.left, width: pos.width }}>
       {items.length === 0 && (
         <div className="dd-empty">
           <span>{emptyHint || '该端点没有返回模型'}</span>
@@ -901,8 +931,17 @@ function OptionsDropdown({ anchor, items, current, emptyHint, onPull, pulling, o
       {items.map((it) => (
         <div
           key={it.value}
+          role="option"
+          aria-selected={it.value === current}
+          tabIndex={0}
           className={`dd-item${it.value === current ? ' active' : ''}`}
           onMouseDown={(e) => { e.preventDefault(); onPick(it.value); }}
+          onKeyDown={(event) => {
+            if (event.key === 'Enter' || event.key === ' ') {
+              event.preventDefault();
+              onPick(it.value);
+            }
+          }}
         >
           <span>{it.label}</span>
           {it.value === current && <small>当前</small>}
