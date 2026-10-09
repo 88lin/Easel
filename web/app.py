@@ -1882,8 +1882,11 @@ async def api_settings_models_save(req: ModelSaveRequest):
             if _pk and base != _pb and not _is_local_gateway_base(_pb):
                 raise HTTPException(400, f'更换 Base URL 时必须重新填写 API Key（{pkey}）')
         if is_chat and slot == 'openai' and not key and _is_set(_cur_env.get('OPENAI_API_KEY')) \
+                and (_cur_env.get('OPENAI_BASE_URL') or '').strip() \
                 and not _is_local_gateway_base(_cur_prov.get('openai', ('', ''))[0]):
             provider_updates['openai']['key'] = _cur_env['OPENAI_API_KEY'].strip()
+            provider_updates['openai']['base'] = (
+                base or _cur_env['OPENAI_BASE_URL'].strip().rstrip('/'))
         if is_chat and pkey and getattr(row, 'primary', False) and model:
             # model 可能本来就是 provider/model 形式：anthropic 行的 model 直接取自
             # .env 的 CLAUDE_MODEL，而那个值按约定就写成 anthropic/claude-opus-4-7。

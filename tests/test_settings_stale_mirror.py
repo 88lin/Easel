@@ -50,6 +50,31 @@ def test_unchanged_authoritative_url_repairs_stale_url_and_key(sandbox, slot):
 
 
 @pytest.mark.parametrize("slot", ["openai", "relay", "anthropic"])
+def test_model_only_save_repairs_authoritative_url_and_key_together(sandbox, slot):
+    client, env_path, config_path = sandbox
+    provider = seed(env_path, config_path, slot)
+    response = client.post("/api/settings/models/save", json={"rows": [
+        {"slot": slot, "model": "new-model"},
+    ]})
+    assert response.status_code == 200, response.text
+    mirror = json.loads(config_path.read_text())["models"]["providers"][provider]
+    assert mirror["baseUrl"] == "https://current.example/v1"
+    assert mirror["apiKey"] == "sk-env-test"
+
+
+def test_openai_without_authoritative_url_does_not_move_env_key_to_mirror(sandbox):
+    client, env_path, config_path = sandbox
+    seed(env_path, config_path, "openai", base="")
+    response = client.post("/api/settings/models/save", json={"rows": [
+        {"slot": "openai", "model": "new-model"},
+    ]})
+    assert response.status_code == 200, response.text
+    mirror = json.loads(config_path.read_text())["models"]["providers"]["openai"]
+    assert mirror["baseUrl"] == "https://old.example/v1"
+    assert mirror["apiKey"] == "sk-mirror-test"
+
+
+@pytest.mark.parametrize("slot", ["openai", "relay", "anthropic"])
 @pytest.mark.parametrize("env_key", ["sk-env-test", "", "sk-ant-REPLACE_ME"])
 def test_real_url_change_requires_a_new_key_even_when_env_key_is_missing(sandbox, slot, env_key):
     client, env_path, config_path = sandbox
@@ -113,7 +138,7 @@ def test_openai_local_gateway_keeps_its_own_authentication_key(sandbox):
     assert mirror["apiKey"] == "sk-gateway-test"
 
 
-@pytest.mark.parametrize("slot", ["anthropic", "relay"])
+@pytest.mark.parametrize("slot", ["openai", "anthropic", "relay"])
 @pytest.mark.parametrize("env_key", ["", "sk-ant-REPLACE_ME"])
 @pytest.mark.parametrize("env_base", ["", "https://unused-env.example/v1"])
 def test_mirror_only_credentials_keep_their_url_on_model_only_save(sandbox, slot, env_key, env_base):
