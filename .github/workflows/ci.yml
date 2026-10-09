@@ -117,8 +117,13 @@ jobs:
         shell: [powershell, pwsh]   # powershell = Windows PowerShell 5.1
     steps:
       - uses: actions/checkout@v7
-      - name: Run tolerance probe
-        shell: ${{ matrix.shell }}
+      - name: Run tolerance probe (Windows PowerShell)
+        if: matrix.shell == 'powershell'
+        shell: powershell
+        run: ./tests/ps_tolerance_probe.ps1
+      - name: Run tolerance probe (PowerShell Core)
+        if: matrix.shell == 'pwsh'
+        shell: pwsh
         run: ./tests/ps_tolerance_probe.ps1
 
   # 现有 test job 从不构建前端，而 doctor.py 把 web/frontend/dist/index.html 当作安装成功的
@@ -138,6 +143,8 @@ jobs:
           cache-dependency-path: web/frontend/package-lock.json
       - run: npm ci
       - run: npm run lint
+      - name: Frontend regression tests
+        run: node --test ../../tests/frontend/*.test.mjs
       - run: npm run build
 
   # 真·跑一遍安装。只在 nightly / 手动触发 / 打了 ci:full-install 标签的 PR 上跑：
