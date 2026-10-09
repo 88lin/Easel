@@ -19,6 +19,11 @@ sys.path.insert(0, str(PROJECT_ROOT / "web"))
 import app as web  # noqa: E402
 
 
+@pytest.fixture(autouse=True)
+def isolated_trend_cache(monkeypatch):
+    monkeypatch.setattr(web, "_TREND_CACHE", {})
+
+
 # ---- 各家响应格式 ----
 
 def test_parse_hot_handles_plain_string_array():
@@ -107,3 +112,30 @@ def test_trends_ignores_unknown_platform(monkeypatch):
     data = asyncio.run(web.api_trends("weibo,不存在", 5))
     assert [g["platform"] for g in data["trends"]] == ["weibo"]
     assert [g["label"] for g in data["trends"]] == ["微博"]
+
+
+@pytest.mark.parametrize("primary_result", [None, {"data": []}, {"data": "invalid"}])
+def test_fetch_platform_falls_back_on_error_or_empty_response(monkeypatch, primary_result):
+    primary, backup = web.TREND_SOURCES["weibo"]
+    calls = []
+
+    def fetch(url):
+        calls.append(url)
+        if url == primary:
+            if primary_result is None:
+                raise OSError("unavailable")
+            return primary_result
+        return {"data": [{"title": "备用热点"}]}
+
+    monkeypatch.setattr(web, "_http_get_json", fetch)
+    assert web._fetch_platform("weibo") == [{"title": "备用热点", "hot": "", "url": ""}]
+    assert calls == [primary, backup]
+
+
+def test_trends_reuses_cached_items_when_all_sources_fail(monkeypatch):
+    items = [{"title": "缓存热点", "hot": "", "url": ""}]
+    web._TREND_CACHE["weibo"] = (0, items)
+    monkeypatch.setattr(web, "_fetch_platform", lambda platform: [])
+    data = asyncio.run(web.api_trends("weibo", 15))
+    assert data["trends"][0]["items"] == items
+    assert data["trends"][0]["ok"] is True

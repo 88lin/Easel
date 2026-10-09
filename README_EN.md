@@ -174,11 +174,21 @@ easel web
 
 > If you see `easel: command not found`, the virtual environment is not activated. You can also run it by full path without activating, e.g. `.venv/bin/easel doctor` (Windows: `.venv\Scripts\easel.exe doctor`).
 
-`bash setup.sh` is a rerunnable guided installer. It detects and reuses an existing local OpenClaw
+`bash setup.sh` is a rerunnable installer. It detects and reuses an existing local OpenClaw
 installation without touching `~/.openclaw/`; Easel uses its isolated `~/.openclaw-easel/` profile.
-When an existing OpenClaw default model is found, the installer asks whether to reuse its model name.
-If no model is configured, it interactively asks for an Anthropic API key and model name. You may also
-copy `.env.example` and fill it in before running the installer.
+
+**Configure your model API key in the browser — the installer no longer asks for it in the terminal.**
+After installing, run `easel web`; on first open it takes you straight to *Settings → Model config*.
+Enter your key and save, and Easel writes the OpenClaw configuration and restarts the gateway for you
+— no need to rerun `setup.sh`. The panel can also list a provider's available models and run a
+connectivity self-test, neither of which the old terminal prompt could do. Alternatively, copy
+`.env.example`, fill in a key, and run `easel doctor` to re-check.
+
+The installer is fully non-interactive apart from one question (whether to create `.venv`, which takes
+its default when stdin is not a TTY), so it is safe for CI. Non-fatal problems — FFmpeg, Chromium,
+gateway startup, missing model config — are collected into a summary at the end and written to
+`outputs/_install/last-install.json` for `easel doctor` to repeat; the install itself still exits 0.
+Set `EASEL_SETUP_STRICT=1` to turn those warnings back into hard failures.
 
 Open `http://localhost:7860` for the Web workspace. Run `easel doctor` to check the environment and `easel ping` to verify the gateway and Agent connection.
 
