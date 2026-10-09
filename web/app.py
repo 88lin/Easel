@@ -4266,12 +4266,13 @@ async def api_delete_session(session_key: str):
 
 
 TREND_SOURCES: dict[str, tuple[str, str | None]] = {
-    "weibo": ("https://60s.viki.moe/v2/weibo", "https://v2.xxapi.cn/api/weibohot"),
-    "douyin": ("https://60s.viki.moe/v2/douyin", "https://v2.xxapi.cn/api/douyinhot"),
-    "zhihu": ("https://60s.viki.moe/v2/zhihu", None),
-    "bilibili": ("https://60s.viki.moe/v2/bili", "https://v2.xxapi.cn/api/bilibilihot"),
-    "baidu": ("https://60s.viki.moe/v2/baidu/hot", "https://v2.xxapi.cn/api/baiduhot"),
-    "toutiao": ("https://60s.viki.moe/v2/toutiao", None),
+    "weibo": ("https://v2.xxapi.cn/api/weibohot", "https://60s.viki.moe/v2/weibo"),
+    "douyin": ("https://v2.xxapi.cn/api/douyinhot", "https://60s.viki.moe/v2/douyin"),
+    "zhihu": ("https://api.zhihu.com/topstory/hot-list?limit=50", "https://60s.viki.moe/v2/zhihu"),
+    "bilibili": ("https://v2.xxapi.cn/api/bilibilihot", "https://60s.viki.moe/v2/bili"),
+    "baidu": ("https://v2.xxapi.cn/api/baiduhot", "https://60s.viki.moe/v2/baidu/hot"),
+    "toutiao": ("https://www.toutiao.com/hot-event/hot-board/?origin=toutiao_pc",
+                "https://60s.viki.moe/v2/toutiao"),
 }
 TREND_LABELS = {
     "weibo": "微博",
@@ -4282,31 +4283,58 @@ TREND_LABELS = {
     "toutiao": "头条",
 }
 _TREND_CACHE: dict[str, tuple[float, list]] = {}
+_HOT_TITLE_KEYS = ("title", "Title", "word", "name", "keyword")
+_HOT_HOT_KEYS = ("hot", "hot_value", "HotValue", "hotValue", "num", "detail_text")
+_HOT_URL_KEYS = ("url", "Url", "link", "mobil_url")
 
 
 def _http_get_json(url: str, timeout: int = 8):
-    req = urllib.request.Request(url, headers={"User-Agent": "Mozilla/5.0 Easel"})
+    req = urllib.request.Request(url, headers={
+        "User-Agent": "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 Chrome/124.0 Safari/537.36",
+        "Accept": "application/json, text/plain, */*",
+    })
     with urllib.request.urlopen(req, timeout=timeout) as r:
         return json.loads(r.read().decode("utf-8", "replace"))
 
 
-def _parse_hot(obj: dict) -> list[dict]:
-    data = obj.get("data")
+def _pick_str(data: object, keys: tuple[str, ...]) -> str:
+    if not isinstance(data, dict):
+        return ""
+    for key in keys:
+        value = data.get(key)
+        if isinstance(value, (int, float)) and not isinstance(value, bool):
+            return str(value)
+        if isinstance(value, str) and value.strip():
+            return value.strip()
+    return ""
+
+
+def _trend_web_url(url: str) -> str:
+    match = re.fullmatch(r'https?://api\.zhihu\.com/questions/(\d+)', url)
+    return f'https://www.zhihu.com/question/{match.group(1)}' if match else url
+
+
+def _parse_hot(obj: object) -> list[dict]:
+    data = obj.get("data") if isinstance(obj, dict) else None
     if isinstance(data, dict):
         data = data.get("data") or data.get("list") or []
-    out = []
-    if isinstance(data, list):
-        for it in data:
-            if not isinstance(it, dict):
-                continue
-            title = it.get("title") or it.get("word") or it.get("name") or it.get("keyword")
-            if not title:
-                continue
-            out.append({
-                "title": str(title),
-                "hot": str(it.get("hot") or it.get("hot_value") or it.get("num") or ""),
-                "url": it.get("url") or it.get("link") or it.get("mobil_url") or "",
-            })
+    out: list[dict] = []
+    if not isinstance(data, list):
+        return out
+    for item in data:
+        if isinstance(item, str):
+            if item.strip():
+                out.append({"title": item.strip(), "hot": "", "url": ""})
+            continue
+        if not isinstance(item, dict):
+            continue
+        target = item.get("target") if isinstance(item.get("target"), dict) else {}
+        title = _pick_str(item, _HOT_TITLE_KEYS) or _pick_str(target, _HOT_TITLE_KEYS)
+        if not title:
+            continue
+        hot = _pick_str(item, _HOT_HOT_KEYS) or _pick_str(target.get("metrics_area"), ("text",))
+        url = _pick_str(item, _HOT_URL_KEYS) or _pick_str(target, _HOT_URL_KEYS)
+        out.append({"title": title, "hot": hot, "url": _trend_web_url(url)})
     return out
 
 
@@ -4344,6 +4372,7 @@ async def api_trends(platforms: str = "weibo,douyin,zhihu", limit: int = 12):
             "platform": pf,
             "label": TREND_LABELS.get(pf, pf),
             "items": items[:max(1, min(limit, 30))],
+            "ok": bool(items),
         })
     return {"trends": result, "updated": int(now)}
 
