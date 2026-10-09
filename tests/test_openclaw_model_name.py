@@ -22,6 +22,7 @@ import web.app as web
 @pytest.fixture()
 def client(tmp_path, monkeypatch):
     monkeypatch.setenv("EASEL_OPENCLAW_STATE_DIR", str(tmp_path))
+    monkeypatch.setattr(web, "ENV_FILE", tmp_path / ".env")
     oc = tmp_path / "openclaw.json"
     oc.write_text(json.dumps({
         "models": {"providers": {"openai": {"api": "openai-completions"}}},
@@ -55,16 +56,20 @@ def test_new_custom_provider_gets_model_name(client):
     assert isinstance(entry.get("name"), str) and entry["name"].strip()
 
 
-def test_existing_model_name_is_kept(client):
+@pytest.mark.parametrize("model_name", ["DeepSeek V3 (relay)", "", "   ", None, 123, {"bad": "name"}])
+def test_existing_model_name_is_kept_or_repaired(client, model_name):
     """已经有 name 的（例如 OpenClaw 自己探测写下的）不能被覆盖。"""
     c, oc = client
     cfg = json.loads(oc.read_text(encoding="utf-8"))
     cfg["models"]["providers"]["newrelay"] = {
         "baseUrl": "https://relay.example.com/v1",
         "apiKey": "sk-old",
-        "models": [{"id": "deepseek-v3", "name": "DeepSeek V3 (relay)"}],
+        "models": [{"id": "deepseek-v3", "name": model_name}],
     }
     oc.write_text(json.dumps(cfg), encoding="utf-8")
     r = c.post("/api/settings/models/save", json={"channel": "chat", "rows": [_row(key="")]})
     assert r.status_code == 200, r.text
-    assert _providers(oc)["newrelay"]["models"][0]["name"] == "DeepSeek V3 (relay)"
+    provider = _providers(oc)["newrelay"]
+    expected = model_name if isinstance(model_name, str) and model_name.strip() else "deepseek-v3"
+    assert provider["models"][0]["name"] == expected
+    assert provider["apiKey"] == "sk-old"

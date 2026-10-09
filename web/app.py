@@ -699,6 +699,25 @@ def _mask(val: str) -> str:
     return '••••' + v[-4:]
 
 
+# 要从回显文本里抹掉的 .env 键：命中这些词的一律当机密处理
+_SECRETISH_RE = re.compile(r'KEY|TOKEN|SECRET|PASSWORD|COOKIE', re.I)
+
+
+def _scrub_secrets(text: str) -> str:
+    """把 .env 里的机密值从要回显给前端的文本里抹掉。
+
+    子进程 stderr 会被原样带到浏览器，而 openclaw 的报错可能回显配置值；
+    按「已知机密的字面量」替换最稳妥，不依赖猜正则能否匹配各家 key 的格式。
+    """
+    out = text
+    for key, val in _read_env().items():
+        v = val.strip().strip('"').strip("'")
+        # 太短的值（占位符、枚举值如 none/http）替换会误伤正常文本
+        if len(v) >= 8 and _SECRETISH_RE.search(key):
+            out = out.replace(v, _mask(v))
+    return out
+
+
 def _key_configured(key: dict, env: dict[str, str]) -> bool:
     '某个 key（含别名）是否已配置。'
     if _is_set(env.get(key['env'])):
@@ -864,7 +883,21 @@ def run_agent_sync(msg: str, timeout: int = TIMEOUT_DIRECT, session_id: str | No
         return '⏳ 这个会话正在另一个窗口运行，请稍候再试'
     try:
         r = subprocess.run(cmd, capture_output=True, text=True, cwd=str(PROJECT_ROOT), timeout=timeout + 30, env=_proxy_env())
-        return clean_agent_output(r.stdout or '') or '（无输出）'
+        out = clean_agent_output(r.stdout or '')
+        if out:
+            return out
+        # 以前这里直接 `or '（无输出）'`：returncode 与 stderr 全部丢弃，于是子进程的
+        # 任何失败（参数不被当前 OpenClaw 版本支持、配置校验不过、provider 报错）都长
+        # 成同一句「（无输出）」，排查只能靠手动把整条命令行复现一遍。
+        # 实测 `--session-key` 在老版 OpenClaw 上不存在，就是被这里藏掉一整轮的。
+        err = clean_agent_output(r.stderr or '')
+        if r.returncode != 0:
+            detail = _scrub_secrets(err)[-400:].strip() or f'退出码 {r.returncode}'
+            return f'❌ agent 执行失败（rc={r.returncode}）：{detail}'
+        # rc=0 但没有任何产出：stderr 里通常有线索（如模型拒答、工具被拦）
+        if err:
+            return f'（无输出）\n\n{_scrub_secrets(err)[-400:].strip()}'
+        return '（无输出）'
     except subprocess.TimeoutExpired:
         return '⏱️ 请求超时'
     except Exception as e:
@@ -1034,6 +1067,79 @@ async def static_file(path: str):
 @app.get("/api/status")
 async def api_status():
     return {"gateway": check_gateway(), "skills": get_skills(), "personas": list_personas()}
+
+
+@app.get("/api/settings/bootstrap")
+async def api_settings_bootstrap():
+    """首次打开时的自检：模型配好了吗、网关活着吗、上次安装留了什么没做完。
+
+    安装脚本不再在终端问 API Key（改为引导到这里配），所以前端需要一个可靠的
+    「还缺什么」判据。modelConfigured 必须同时满足两件事，这正是 doctor 里那条
+    「全绿却对话报错」防线：
+      - .env 里有可用的认证（_env_key_valid，带占位符识别）；
+      - primary 指向的 provider 在 openclaw.json 里真的配了认证
+        （_primary_model_routable）—— 只查 .env 查不出 provider 一个字没写的情况。
+    """
+    env_ok = False
+    route_ok = False
+    route_detail = ''
+    try:
+        from easel.commands.doctor import _env_key_valid, _primary_model_routable
+        env_ok = bool(_env_key_valid())
+        route_ok, route_detail = _primary_model_routable()
+    except Exception as e:  # noqa: BLE001
+        route_detail = f'自检失败：{e}'
+
+    warnings: list[dict] = []
+    try:
+        rep = PROJECT_ROOT / 'outputs' / '_install' / 'last-install.json'
+        if rep.is_file():
+            warnings = json.loads(rep.read_text(encoding='utf-8')).get('warnings') or []
+    except Exception:  # noqa: BLE001
+        warnings = []
+
+    return {
+        'modelConfigured': bool(env_ok and route_ok),
+        'envKeyOk': env_ok,
+        'routeOk': bool(route_ok),
+        'routeDetail': route_detail,
+        'gatewayUp': bool(check_gateway()),
+        'openclawConfigExists': _oc_config_path().is_file(),
+        'installWarnings': warnings,
+    }
+
+
+@app.post("/api/gateway/restart")
+async def api_gateway_restart():
+    """重启本机 gateway，让刚保存的模型配置立刻生效。
+
+    为什么需要：默认传输层是 http（见 CHAT_TRANSPORT），对话走的是一个常驻 gateway，
+    由 setup.sh 启动一次。配置改了之后它是否重新读 openclaw.json 取决于 OpenClaw 版本，
+    不是一条该押在安装流程上的假设。
+
+    安全性：web/app.py 绑 0.0.0.0 且无鉴权，所以这个端点刻意做成**无参数**，argv
+    完全固定（复用 easel.commands.gateway 的同一条分发），不接受任何外部输入拼进命令。
+    """
+    script = PROJECT_ROOT / 'scripts' / ('gateway.ps1' if os.name == 'nt' else 'gateway.sh')
+    if not script.is_file():
+        raise HTTPException(500, '找不到 gateway 启动脚本')
+    cmd = (['powershell', '-NoProfile', '-ExecutionPolicy', 'Bypass', '-File', str(script), 'restart']
+           if os.name == 'nt' else ['bash', str(script), 'restart'])
+    try:
+        r = await asyncio.get_event_loop().run_in_executor(
+            None,
+            lambda: subprocess.run(cmd, cwd=str(PROJECT_ROOT), capture_output=True,
+                                   text=True, timeout=120, env=_proxy_env()),
+        )
+    except subprocess.TimeoutExpired:
+        # 超时返回提示而不是 500：网关可能只是起得慢，用户刷新一下就好。
+        return {'ok': False, 'note': '重启超时；可稍后刷新，或手动运行 bash scripts/gateway.sh restart'}
+    except Exception as e:  # noqa: BLE001
+        return {'ok': False, 'note': f'重启失败：{e}'}
+    up = check_gateway()
+    tail = clean_agent_output(r.stdout or '')[-200:]
+    return {'ok': bool(up), 'gatewayUp': bool(up),
+            'note': tail or ('网关已重启' if up else '网关未就绪，请查看 /tmp/easel-gateway.log')}
 
 
 @app.get("/api/personas")
@@ -1299,33 +1405,55 @@ def _model_channels() -> dict:
     chat_rows = []
     ob = (env.get("OPENAI_BASE_URL") or "").strip()
     om = (env.get("OPENAI_MODEL") or "").strip()
-    ok_key = bool((env.get("OPENAI_API_KEY") or "").strip())
+    # 这三行一律用 _is_set 而不是裸真值判断：全新安装复制的 .env.example 里写着
+    # ANTHROPIC_API_KEY=sk-ant-REPLACE_ME，裸判真会让设置面板显示「已配置」并给出
+    # 一个假的 «sk-an…E_ME»。把用户从终端引导到浏览器配置时，这等于把人送进坑里。
+    ok_key = _is_set(env.get("OPENAI_API_KEY"))
     if ob or ok_key:
         chat_rows.append({
             "slot": "openai", "order": 1, "name": "deepseek",
             "sub": "官方直连",
             "type": "openai", "model": om or "deepseek-chat",
-            "baseUrl": ob, "keyMasked": _mask_key(env.get("OPENAI_API_KEY", "")),
+            "baseUrl": ob, "keyMasked": _mask_key(env.get("OPENAI_API_KEY", "") if ok_key else ""),
             "role": "主" if primary.startswith("openai/") else "备",
             "result": "已配置" if ok_key else "缺 key",
         })
+    def _is_primary(pkey: str, model: str) -> bool:
+        """这一行是不是当前的主模型。
+
+        不能像 openai 行那样只比 provider 前缀：anthropic 与 relay 两个槽位现在都落在
+        同一个 anthropic provider 上（见 _sync_anthropic_provider），只比前缀会让两行
+        同时显示「主」。所以连模型一起比；model 本身可能已是 provider/model 形式
+        （CLAUDE_MODEL 按约定就这么写），两种写法都要认。
+        """
+        if not primary or not model:
+            return False
+        return primary == model or primary == f"{pkey}/{model}"
+
     ab = (env.get("ANTHROPIC_BASE_URL") or "").strip()
     ak = (env.get("ANTHROPIC_API_KEY") or "").strip()
+    ak_ok = _is_set(ak)
     if ab or ak:
         chat_rows.append({
             "slot": "anthropic", "order": len(chat_rows) + 1, "name": "anthropic", "sub": "官方直连",
             "type": "anthropic", "model": (env.get("CLAUDE_MODEL") or "claude-sonnet-4-6").strip(),
-            "baseUrl": ab or "官方", "keyMasked": _mask_key(ak),
-            "role": "备", "result": "已配置" if ak else "缺 key",
+            "baseUrl": ab or "官方", "keyMasked": _mask_key(ak if ak_ok else ""),
+            # 原来写死「备」：主模型明明是 anthropic/... 时面板也显示备用，和 openai 行
+            # 的处理不一致，用户据此判断「哪个在生效」会判错。
+            "role": "主" if _is_primary("anthropic", (env.get("CLAUDE_MODEL") or "").strip()) else "备",
+            "result": "已配置" if ak_ok else "缺 key",
         })
     lb = (env.get("EASEL_LLM_BASE_URL") or "").strip()
     lk = (env.get("EASEL_LLM_API_KEY") or "").strip()
+    lk_ok = _is_set(lk)
     if lb or lk:
         chat_rows.append({
             "slot": "relay", "order": len(chat_rows) + 1, "name": "relay", "sub": "中转站",
             "type": "openai", "model": (env.get("CLAUDE_MODEL") or "deepseek-chat").strip(),
-            "baseUrl": lb or "（未配置）", "keyMasked": _mask_key(lk),
-            "role": "备", "result": "已配置" if lk else "缺 key",
+            "baseUrl": lb or "（未配置）", "keyMasked": _mask_key(lk if lk_ok else ""),
+            # relay 槽位落的也是 anthropic provider（与 setup.sh 的 EASEL_LLM_* 分支一致）
+            "role": "主" if _is_primary("anthropic", (env.get("CLAUDE_MODEL") or "").strip()) else "备",
+            "result": "已配置" if lk_ok else "缺 key",
         })
 
     custom_rows = []
@@ -1344,9 +1472,10 @@ def _model_channels() -> dict:
                     "type": "openai",
                     "protocol": "anthropic" if pv.get("api") == "anthropic-messages" else "openai",
                     "model": mid or "", "baseUrl": pv.get("baseUrl") or "",
-                    "keyMasked": _mask_key(str(pv.get("apiKey") or "")),
+                    "keyMasked": _mask_key(str(pv.get("apiKey") or "")
+                                           if _is_set(str(pv.get("apiKey") or "")) else ""),
                     "role": "主" if primary == f"{pkey}/{mid}" else "备",
-                    "result": "已配置" if str(pv.get("apiKey") or "").strip() else "缺 key",
+                    "result": "已配置" if _is_set(str(pv.get("apiKey") or "")) else "缺 key",
                     "deletable": True,
                 })
     except Exception:  # noqa: BLE001
@@ -1504,12 +1633,9 @@ def _sync_openclaw_chat(provider_updates: dict[str, dict], keep_custom: set[str]
                 if models[0].get('id') != model:
                     models[0]['id'] = model
                     changed = True
-                # 模型条目必须有非空 name：OpenClaw 的配置 schema 强制要求
-                # （models.providers.<p>.models[0].name expected string, received undefined），
-                # 缺了的话保存照样返回成功，但**网关下次启动会直接拒绝加载配置**，
-                # 整个对话通道一起挂。已有的 name 不动，只补缺失的。
-                if not str(models[0].get('name') or '').strip():
-                    models[0]['name'] = model or str(models[0].get('id') or pkey)
+                model_name = models[0].get('name')
+                if not isinstance(model_name, str) or not model_name.strip():
+                    models[0]['name'] = model
                     changed = True
                 prov['models'] = models
         if primary_ref:
@@ -1545,14 +1671,34 @@ def _sync_anthropic_provider(base: str, key: str) -> str:
         providers = data.setdefault('models', {}).setdefault('providers', {})
         prov = providers.get('anthropic')
         target_base = base or 'https://api.anthropic.com'
+        # 早退判据必须把 api 一起算上：否则一个「baseUrl/apiKey 都对、但缺 api」的
+        # 残缺 provider（旧版本 Web 面板写出来的就是这样）永远修不回来。
         if isinstance(prov, dict) and prov.get('baseUrl') == target_base \
+                and prov.get('api') == 'anthropic-messages' \
                 and (not key or prov.get('apiKey') == key):
             return ''
         new_prov = dict(prov) if isinstance(prov, dict) else {'models': []}
         new_prov['baseUrl'] = target_base
+        # api 必须显式写死。上面的 docstring 一直这么说，但代码此前漏了这一行 ——
+        # 不写时 OpenClaw 2026.2.x 会把该 provider 当成 openai-responses、请求打到
+        # /responses，上游的报错被 gateway 当成正常回复塞进 choices[0].message.content，
+        # 于是 Web 对话静默显示「（无输出）」。与 setup.sh 的 oc_write_anthropic 对齐。
+        new_prov['api'] = 'anthropic-messages'
+        # setup.sh 同样会设这个；两边都写，provider 才不会因为「谁后写」而缺字段。
+        new_prov.setdefault('timeoutSeconds', 600)
         if key:
             new_prov['apiKey'] = key
         new_prov.setdefault('models', [])
+        # 一次性迁移：更早的 Web 面板会把中转站写成一个名叫 relay 的 provider，但从来
+        # 不给它填内容，primary 却指过去。本次若没拿到 key，就把 relay 里的捡回来，
+        # 免得老用户升级后 key 变成孤儿；迁移后删掉 relay，避免两处并存各写一半。
+        legacy = providers.get('relay')
+        if isinstance(legacy, dict):
+            if not new_prov.get('apiKey') and legacy.get('apiKey'):
+                new_prov['apiKey'] = legacy['apiKey']
+            if not base and legacy.get('baseUrl'):
+                new_prov['baseUrl'] = legacy['baseUrl']
+            providers.pop('relay', None)
         providers['anthropic'] = new_prov
         shutil.copy2(oc, oc.parent / (oc.name + '.bak-web'))
         tmp = oc.parent / (oc.name + '.tmp')
@@ -1679,7 +1825,12 @@ async def api_settings_models_save(req: ModelSaveRequest):
             if key:
                 updates['EASEL_LLM_API_KEY'] = key
             if is_chat:
-                pkey = 'relay'
+                # 落进 anthropic provider，而不是造一个名叫 relay 的 provider。
+                # setup.sh 的 EASEL_LLM_* 分支写的就是 models.providers.anthropic
+                # （见 oc_write_anthropic）。此前这里只写 .env、从不创建 provider，
+                # 却把 primary 指向 relay/<model> —— 对话直接报
+                # 「No route-compatible authentication source is configured for relay」。
+                pkey = 'anthropic'
         elif slot == 'anthropic':
             if model:
                 updates['CLAUDE_MODEL'] = model
@@ -1718,7 +1869,10 @@ async def api_settings_models_save(req: ModelSaveRequest):
             if _pk and base != _pb.strip().rstrip('/') and not _is_local_gateway_base(_pb):
                 raise HTTPException(400, f'更换 Base URL 时必须重新填写 API Key（{pkey}）')
         if is_chat and pkey and getattr(row, 'primary', False) and model:
-            primary_ref = f'{pkey}/{model}'
+            # model 可能本来就是 provider/model 形式：anthropic 行的 model 直接取自
+            # .env 的 CLAUDE_MODEL，而那个值按约定就写成 anthropic/claude-opus-4-7。
+            # 无脑拼前缀会写出 anthropic/anthropic/claude-opus-4-7，主模型随即不可路由。
+            primary_ref = model if '/' in model else f'{pkey}/{model}'
     if not updates and not provider_updates and not primary_ref:
         raise HTTPException(400, '没有可保存的改动（key 留空表示不改）')
     if updates:
@@ -1726,11 +1880,18 @@ async def api_settings_models_save(req: ModelSaveRequest):
     note = ''
     if is_chat:
         note = _sync_openclaw_chat(provider_updates, keep_custom, primary_ref)
-        # anthropic 槽位不在 provider_updates 里（它不是自定义供应商），但同样要
-        # 落到 openclaw.json 才真正生效 —— setup.sh 写的 provider 可能已过时。
-        if any((r.slot or '').strip() == 'anthropic' for r in req.rows):
+        # anthropic / relay 两个槽位都不在 provider_updates 里（它们不是自定义供应商），
+        # 但同样要落到 openclaw.json 才真正生效 —— setup.sh 写的 provider 可能已过时。
+        # 两者共用同一个 anthropic provider，和 setup.sh 的映射保持一致。
+        _slots = {(r.slot or '').strip() for r in req.rows}
+        if 'anthropic' in _slots:
             _an = _sync_anthropic_provider(updates.get('ANTHROPIC_BASE_URL', ''),
                                           updates.get('ANTHROPIC_API_KEY', ''))
+            if _an:
+                note = f'{note}；{_an}' if note else _an
+        elif 'relay' in _slots:
+            _an = _sync_anthropic_provider(updates.get('EASEL_LLM_BASE_URL', ''),
+                                          updates.get('EASEL_LLM_API_KEY', ''))
             if _an:
                 note = f'{note}；{_an}' if note else _an
     resp = {"ok": True, "note": note}
@@ -4109,9 +4270,6 @@ async def api_delete_session(session_key: str):
 
 
 TREND_SOURCES: dict[str, tuple[str, str | None]] = {
-    # 2026-10-01 实测：60s.viki.moe 对这台机器长期 429 / TLS 握手超时，六个平台全取不到。
-    # 所以把当场验证能用的源放前面，60s 留作回退；知乎/头条原先压根没有第二源，
-    # 现在接的是两家的官方热榜接口（第三方免费源逐个试过：DNS 不通 / 502 / 证书错误）。
     "weibo": ("https://v2.xxapi.cn/api/weibohot", "https://60s.viki.moe/v2/weibo"),
     "douyin": ("https://v2.xxapi.cn/api/douyinhot", "https://60s.viki.moe/v2/douyin"),
     "zhihu": ("https://api.zhihu.com/topstory/hot-list?limit=50", "https://60s.viki.moe/v2/zhihu"),
@@ -4129,10 +4287,6 @@ TREND_LABELS = {
     "toutiao": "头条",
 }
 _TREND_CACHE: dict[str, tuple[float, list]] = {}
-
-
-# 各源字段名不统一，这里把见过的写法都列上：头条官方用大写 Title/HotValue，知乎官方把正文
-# 藏在 target 里，xxapi 的 B站干脆只给一个纯字符串数组。
 _HOT_TITLE_KEYS = ("title", "Title", "word", "name", "keyword")
 _HOT_HOT_KEYS = ("hot", "hot_value", "HotValue", "hotValue", "num", "detail_text")
 _HOT_URL_KEYS = ("url", "Url", "link", "mobil_url")
@@ -4147,23 +4301,21 @@ def _http_get_json(url: str, timeout: int = 8):
         return json.loads(r.read().decode("utf-8", "replace"))
 
 
-def _pick_str(d: object, keys: tuple[str, ...]) -> str:
-    """按 keys 顺序取第一个非空值并转成字符串（热度有数字也有字符串）。"""
-    if not isinstance(d, dict):
+def _pick_str(data: object, keys: tuple[str, ...]) -> str:
+    if not isinstance(data, dict):
         return ""
-    for k in keys:
-        v = d.get(k)
-        if isinstance(v, (int, float)) and not isinstance(v, bool):
-            return str(v)
-        if isinstance(v, str) and v.strip():
-            return v.strip()
+    for key in keys:
+        value = data.get(key)
+        if isinstance(value, (int, float)) and not isinstance(value, bool):
+            return str(value)
+        if isinstance(value, str) and value.strip():
+            return value.strip()
     return ""
 
 
 def _trend_web_url(url: str) -> str:
-    """知乎官方源给的是 api.zhihu.com/questions/<id>，换成网页地址，点开才是问题页而不是 JSON。"""
-    m = re.fullmatch(r'https?://api\.zhihu\.com/questions/(\d+)', url)
-    return f'https://www.zhihu.com/question/{m.group(1)}' if m else url
+    match = re.fullmatch(r'https?://api\.zhihu\.com/questions/(\d+)', url)
+    return f'https://www.zhihu.com/question/{match.group(1)}' if match else url
 
 
 def _parse_hot(obj: object) -> list[dict]:
@@ -4173,19 +4325,19 @@ def _parse_hot(obj: object) -> list[dict]:
     out: list[dict] = []
     if not isinstance(data, list):
         return out
-    for it in data:
-        if isinstance(it, str):                 # 纯标题数组（xxapi 的 B站）
-            if it.strip():
-                out.append({"title": it.strip(), "hot": "", "url": ""})
+    for item in data:
+        if isinstance(item, str):
+            if item.strip():
+                out.append({"title": item.strip(), "hot": "", "url": ""})
             continue
-        if not isinstance(it, dict):
+        if not isinstance(item, dict):
             continue
-        target = it.get("target") if isinstance(it.get("target"), dict) else {}
-        title = _pick_str(it, _HOT_TITLE_KEYS) or _pick_str(target, _HOT_TITLE_KEYS)
+        target = item.get("target") if isinstance(item.get("target"), dict) else {}
+        title = _pick_str(item, _HOT_TITLE_KEYS) or _pick_str(target, _HOT_TITLE_KEYS)
         if not title:
             continue
-        hot = _pick_str(it, _HOT_HOT_KEYS) or _pick_str(target.get("metrics_area"), ("text",))
-        url = _pick_str(it, _HOT_URL_KEYS) or _pick_str(target, _HOT_URL_KEYS)
+        hot = _pick_str(item, _HOT_HOT_KEYS) or _pick_str(target.get("metrics_area"), ("text",))
+        url = _pick_str(item, _HOT_URL_KEYS) or _pick_str(target, _HOT_URL_KEYS)
         out.append({"title": title, "hot": hot, "url": _trend_web_url(url)})
     return out
 
@@ -4224,7 +4376,6 @@ async def api_trends(platforms: str = "weibo,douyin,zhihu", limit: int = 12):
             "platform": pf,
             "label": TREND_LABELS.get(pf, pf),
             "items": items[:max(1, min(limit, 30))],
-            # 取不到数据要跟"今天真的没热搜"分开：热榜不会是空列表，空就是所有源都没取到。
             "ok": bool(items),
         })
     return {"trends": result, "updated": int(now)}
