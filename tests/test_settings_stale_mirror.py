@@ -114,9 +114,11 @@ def test_openai_local_gateway_keeps_its_own_authentication_key(sandbox):
 
 
 @pytest.mark.parametrize("slot", ["anthropic", "relay"])
-def test_mirror_only_credentials_keep_their_url_on_model_only_save(sandbox, slot):
+@pytest.mark.parametrize("env_key", ["", "sk-ant-REPLACE_ME"])
+@pytest.mark.parametrize("env_base", ["", "https://unused-env.example/v1"])
+def test_mirror_only_credentials_keep_their_url_on_model_only_save(sandbox, slot, env_key, env_base):
     client, env_path, config_path = sandbox
-    provider = seed(env_path, config_path, slot, env_key="", base="")
+    provider = seed(env_path, config_path, slot, env_key=env_key, base=env_base)
     response = client.post("/api/settings/models/save", json={"rows": [
         {"slot": slot, "model": "new-model", "key": ""},
     ]})

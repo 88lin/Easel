@@ -1902,7 +1902,9 @@ async def api_settings_models_save(req: ModelSaveRequest):
         _slots = {(r.slot or '').strip() for r in req.rows}
         if 'anthropic' in _slots:
             _an = _sync_anthropic_provider(
-                updates.get('ANTHROPIC_BASE_URL', _cur_env.get('ANTHROPIC_BASE_URL', ''))
+                updates.get('ANTHROPIC_BASE_URL',
+                            _cur_env.get('ANTHROPIC_BASE_URL', '')
+                            if _is_set(_cur_env.get('ANTHROPIC_API_KEY')) else '')
                 or ('' if _is_set(_cur_env.get('ANTHROPIC_API_KEY'))
                     else _cur_prov.get('anthropic', ('', ''))[0]),
                 updates.get('ANTHROPIC_API_KEY',
@@ -1912,7 +1914,9 @@ async def api_settings_models_save(req: ModelSaveRequest):
                 note = f'{note}；{_an}' if note else _an
         elif 'relay' in _slots:
             _an = _sync_anthropic_provider(
-                updates.get('EASEL_LLM_BASE_URL', _cur_env.get('EASEL_LLM_BASE_URL', ''))
+                updates.get('EASEL_LLM_BASE_URL',
+                            _cur_env.get('EASEL_LLM_BASE_URL', '')
+                            if _is_set(_cur_env.get('EASEL_LLM_API_KEY')) else '')
                 or ('' if _is_set(_cur_env.get('EASEL_LLM_API_KEY'))
                     else _cur_prov.get('anthropic', ('', ''))[0]),
                 updates.get('EASEL_LLM_API_KEY',
